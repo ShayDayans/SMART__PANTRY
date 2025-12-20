@@ -5,6 +5,7 @@ from typing import List, Optional
 from uuid import UUID
 from supabase import Client
 from app.schemas.shopping_list import ShoppingListCreate, ShoppingListUpdate, ShoppingListItemCreate, ShoppingListItemUpdate
+from app.models.enums import ShoppingListStatus
 
 
 class ShoppingListService:
@@ -120,4 +121,96 @@ class ShoppingListService:
         """Delete a shopping list item"""
         response = self.supabase.table("shopping_list_items").delete().eq("shopping_list_item_id", str(item_id)).execute()
         return len(response.data) > 0
+    
+    def complete_shopping_list(self, shopping_list_id: UUID, user_id: UUID) -> dict:
+        """
+        Complete shopping list: update all items with product_id to FULL state in inventory
+        and update the predictor model
+        """
+        from datetime import datetime, timezone
+        from app.models.enums import InventoryState, InventorySource, InventoryAction
+        
+        # Get shopping list with items
+        shopping_list = self.get_shopping_list(shopping_list_id)
+        if not shopping_list:
+            raise ValueError("Shopping list not found")
+        
+        # Update shopping list status to COMPLETED
+        from app.models.enums import ShoppingListStatus
+        self.update_shopping_list(shopping_list_id, ShoppingListUpdate(status=ShoppingListStatus.COMPLETED))
+        
+        items = shopping_list.get("shopping_list_items", [])
+        inventory_updates = []
+        log_ids = []
+        
+        # Get product service for product details
+        from app.services.product_service import ProductService
+        product_service = ProductService(self.supabase)
+        
+        for item in items:
+            product_id = item.get("product_id")
+            if not product_id:
+                # Skip items without product_id (free_text items)
+                continue
+            
+            shopping_list_item_id = item.get("shopping_list_item_id")
+            
+            # Get product details
+            product = product_service.get_product(UUID(product_id))
+            if not product:
+                continue
+            
+            # Check if product exists in user's inventory
+            existing_inventory = self.supabase.table("inventory").select("*").eq(
+                "user_id", str(user_id)
+            ).eq("product_id", product_id).execute()
+            
+            # Update or create inventory item as FULL
+            inventory_data = {
+                "user_id": str(user_id),
+                "product_id": product_id,
+                "state": InventoryState.FULL.value,
+                "last_source": InventorySource.SHOPPING_LIST.value,
+                "displayed_name": product.get("product_name"),
+                "qty_unit": product.get("default_unit", "units"),
+                "confidence": 1.0
+            }
+            
+            if existing_inventory.data and len(existing_inventory.data) > 0:
+                # Update existing inventory
+                update_result = self.supabase.table("inventory").update(inventory_data).eq(
+                    "user_id", str(user_id)
+                ).eq("product_id", product_id).execute()
+            else:
+                # Create new inventory item
+                update_result = self.supabase.table("inventory").insert(inventory_data).execute()
+            
+            inventory_updates.append({
+                "product_id": product_id,
+                "product_name": product.get("product_name"),
+                "state": InventoryState.FULL.value
+            })
+            
+            # Create inventory log entry
+            log_entry = {
+                "user_id": str(user_id),
+                "product_id": product_id,
+                "action": InventoryAction.PURCHASE.value,
+                "delta_state": InventoryState.FULL.value,
+                "action_confidence": 1.0,
+                "source": InventorySource.SHOPPING_LIST.value,
+                "shopping_list_item_id": str(shopping_list_item_id),
+                "note": f"Purchased from shopping list"
+            }
+            
+            log_result = self.supabase.table("inventory_log").insert(log_entry).execute()
+            if log_result.data and len(log_result.data) > 0:
+                log_ids.append(log_result.data[0].get("log_id"))
+        
+        return {
+            "shopping_list_id": str(shopping_list_id),
+            "status": "COMPLETED",
+            "inventory_updates": inventory_updates,
+            "log_ids": log_ids
+        }
 

@@ -1,13 +1,14 @@
 """
 Shopping lists API routes
 """
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from typing import List, Optional
 from uuid import UUID
 from supabase import Client
 
 from app.db.supabase_client import get_supabase
 from app.services.shopping_list_service import ShoppingListService
+from app.services.predictor_service import PredictorService
 from app.schemas.shopping_list import (
     ShoppingListCreate, ShoppingListResponse, ShoppingListUpdate,
     ShoppingListItemCreate, ShoppingListItemResponse, ShoppingListItemUpdate
@@ -19,6 +20,11 @@ router = APIRouter(prefix="/shopping-lists", tags=["shopping-lists"])
 def get_shopping_list_service(supabase: Client = Depends(get_supabase)) -> ShoppingListService:
     """Dependency to get shopping list service"""
     return ShoppingListService(supabase)
+
+
+def get_predictor_service(supabase: Client = Depends(get_supabase)) -> PredictorService:
+    """Dependency to get predictor service"""
+    return PredictorService(supabase)
 
 
 # Shopping Lists
@@ -136,4 +142,37 @@ def delete_shopping_list_item(
     deleted = service.delete_shopping_list_item(item_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Shopping list item not found")
+
+
+@router.post("/{shopping_list_id}/complete")
+def complete_shopping_list(
+    shopping_list_id: UUID,
+    user_id: UUID,
+    background_tasks: BackgroundTasks,
+    service: ShoppingListService = Depends(get_shopping_list_service),
+    predictor_service: PredictorService = Depends(get_predictor_service)
+):
+    """
+    Complete shopping list: update all items with product_id to FULL state in inventory
+    and update the predictor model
+    """
+    try:
+        result = service.complete_shopping_list(shopping_list_id, user_id)
+        
+        # Update predictor model for each product in background
+        for log_id in result.get("log_ids", []):
+            try:
+                background_tasks.add_task(
+                    predictor_service.process_inventory_log,
+                    log_id=str(log_id)
+                )
+            except Exception as e:
+                print(f"Error scheduling predictor update for log_id {log_id}: {e}")
+        
+        return result
+        
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to complete shopping list: {str(e)}")
 

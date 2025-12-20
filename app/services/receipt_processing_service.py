@@ -202,8 +202,7 @@ class ReceiptProcessingService:
                     "action_confidence": 1.0,
                     "source": "RECEIPT",
                     "receipt_item_id": receipt_item.get("receipt_item_id"),
-                    "note": f"Purchased {quantity} units from receipt",
-                    "delta_qty": quantity  # Add quantity to log
+                    "note": f"Purchased {quantity} units from receipt"
                 }
                 log_result = self.supabase.table("inventory_log").insert(log_entry).execute()
                 
@@ -247,7 +246,7 @@ class ReceiptProcessingService:
         matched_items = []
         
         # Get all existing products
-        existing_products = self.product_service.get_all_products()
+        existing_products = self.product_service.get_products()
         print(f"[*] Found {len(existing_products)} existing products in database")
         
         for scanned_item in scan_result.items:
@@ -364,7 +363,7 @@ class ReceiptProcessingService:
         """
         try:
             # Try to find existing category (case-insensitive)
-            categories = self.product_service.get_all_categories()
+            categories = self.product_service.get_categories()
             for cat in categories:
                 if cat["category_name"].lower() == category_name.lower():
                     return cat["category_id"]

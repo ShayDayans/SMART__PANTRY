@@ -5,9 +5,9 @@ from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File,
 from typing import List
 from uuid import UUID
 from supabase import Client
-import os
 
 from app.db.supabase_client import get_supabase
+from app.core.config import settings
 from app.services.receipt_service import ReceiptService
 from app.services.receipt_processing_service import ReceiptProcessingService
 from app.schemas.receipt import ReceiptCreate, ReceiptResponse
@@ -22,7 +22,12 @@ def get_receipt_service(supabase: Client = Depends(get_supabase)) -> ReceiptServ
 
 def get_receipt_processing_service(supabase: Client = Depends(get_supabase)) -> ReceiptProcessingService:
     """Dependency to get receipt processing service"""
-    openai_api_key = os.getenv("OPENAI_API_KEY")
+    openai_api_key = settings.openai_api_key
+    if not openai_api_key:
+        raise HTTPException(
+            status_code=503,
+            detail="OpenAI API key is not configured. Please set OPENAI_API_KEY in your .env file or environment variables."
+        )
     return ReceiptProcessingService(supabase, openai_api_key)
 
 

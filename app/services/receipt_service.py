@@ -63,6 +63,23 @@ class ReceiptService:
         # Fetch complete receipt with items
         return self.get_receipt(UUID(receipt_id))
     
+    def create_receipt_item(self, receipt_id: str, item_data: dict) -> dict:
+        """Create a single receipt item"""
+        receipt_item_data = {
+            "receipt_id": receipt_id,
+            "product_id": str(item_data.get("product_id")) if item_data.get("product_id") else None,
+            "raw_label": item_data.get("detected_name", item_data.get("raw_label", "")),
+            "normalized_label": item_data.get("detected_name", item_data.get("normalized_label")),
+            "quantity": float(item_data.get("quantity", 1.0)) if item_data.get("quantity") else None,
+            "unit": item_data.get("unit", "units"),
+            "unit_price": float(item_data.get("unit_price")) if item_data.get("unit_price") else None,
+            "total_price": float(item_data.get("total_price")) if item_data.get("total_price") else None,
+            "match_confidence": item_data.get("confidence", item_data.get("match_confidence", 0.9))
+        }
+        
+        response = self.supabase.table("receipt_items").insert(receipt_item_data).execute()
+        return response.data[0] if response.data else {}
+    
     def update_receipt(self, receipt_id: UUID, receipt_data: dict) -> Optional[dict]:
         """Update a receipt"""
         data = {}

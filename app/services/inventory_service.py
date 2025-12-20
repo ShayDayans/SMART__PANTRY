@@ -15,10 +15,43 @@ class InventoryService:
     def __init__(self, supabase: Client):
         self.supabase = supabase
     
-    def get_inventory(self, user_id: UUID) -> List[dict]:
-        """Get all inventory items for a user"""
-        response = self.supabase.table("inventory").select("*").eq("user_id", str(user_id)).execute()
-        return response.data if response.data else []
+    def get_inventory(
+        self, 
+        user_id: UUID, 
+        category_id: Optional[UUID] = None,
+        state: Optional[str] = None,
+        search: Optional[str] = None
+    ) -> List[dict]:
+        """Get all inventory items for a user with optional filtering"""
+        # Select with products join to get category info
+        query = self.supabase.table("inventory").select("*, products(*, product_categories(*))").eq("user_id", str(user_id))
+        
+        # Filter by state
+        if state:
+            query = query.eq("state", state)
+        
+        response = query.execute()
+        results = response.data if response.data else []
+        
+        # Filter by category (client-side filtering after join)
+        if category_id:
+            category_id_str = str(category_id)
+            results = [
+                item for item in results
+                if isinstance(item.get("products"), dict) 
+                and item.get("products", {}).get("category_id") == category_id_str
+            ]
+        
+        # Apply search filter (client-side filtering)
+        if search:
+            search_lower = search.lower()
+            results = [
+                item for item in results
+                if search_lower in item.get("displayed_name", "").lower() 
+                or (item.get("products", {}).get("product_name", "").lower() if isinstance(item.get("products"), dict) else "")
+            ]
+        
+        return results
     
     def get_inventory_item(self, user_id: UUID, product_id: UUID) -> Optional[dict]:
         """Get a specific inventory item"""

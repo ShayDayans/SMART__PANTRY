@@ -201,6 +201,23 @@ class PredictorService:
             raise RuntimeError("Predictor modules not available")
         self.repo = SupabasePantryRepository(supabase)
     
+    def _make_json_serializable(self, obj: Any) -> Any:
+        """Recursively convert UUID objects and other non-serializable types to strings"""
+        from uuid import UUID
+        
+        if isinstance(obj, UUID):
+            return str(obj)
+        elif isinstance(obj, dict):
+            return {key: self._make_json_serializable(value) for key, value in obj.items()}
+        elif isinstance(obj, list):
+            return [self._make_json_serializable(item) for item in obj]
+        elif isinstance(obj, tuple):
+            return tuple(self._make_json_serializable(item) for item in obj)
+        elif isinstance(obj, (datetime,)):
+            return obj.isoformat()
+        else:
+            return obj
+    
     def _load_cfg_and_profile(self, user_id: str) -> tuple:
         """Load config and profile"""
         prof = self.repo.get_active_predictor_profile(user_id)
@@ -256,11 +273,15 @@ class PredictorService:
         
         state = stamp_last_prediction(state, fc)
         
+        # Convert params to JSON-serializable format
+        params_json = state.to_params_json()
+        params_json = self._make_json_serializable(params_json)
+        
         self.repo.upsert_predictor_state(
             user_id=user_id,
             product_id=product_id,
             predictor_profile_id=predictor_profile_id,
-            params=state.to_params_json(),
+            params=params_json,
             confidence=fc.confidence,
             updated_at=now,
         )
@@ -279,8 +300,16 @@ class PredictorService:
     def learn_from_manual_change(self, user_id: str, product_id: str) -> None:
         """Learn from manual inventory change WITHOUT overwriting the user's state"""
         try:
+            from uuid import UUID
+            
+            # Ensure user_id and product_id are strings
+            if not isinstance(user_id, str):
+                user_id = str(user_id)
+            if not isinstance(product_id, str):
+                product_id = str(product_id)
+            
             # Get the latest log entry for this product
-            result = self.repo.supabase.table("inventory_log").select("log_id").eq("user_id", str(user_id)).eq("product_id", str(product_id)).order("occurred_at", desc=True).limit(1).execute()
+            result = self.repo.supabase.table("inventory_log").select("log_id").eq("user_id", user_id).eq("product_id", product_id).order("occurred_at", desc=True).limit(1).execute()
             
             if not result.data or len(result.data) == 0:
                 return
@@ -309,12 +338,16 @@ class PredictorService:
             fc = predict(state, now, mult, cfg)
             state = stamp_last_prediction(state, fc)
             
+            # Convert params to JSON-serializable format (handle UUID objects)
+            params_json = state.to_params_json()
+            params_json = self._make_json_serializable(params_json)
+            
             # Save the updated predictor state
             self.repo.upsert_predictor_state(
                 user_id=user_id,
                 product_id=product_id,
                 predictor_profile_id=predictor_profile_id,
-                params=state.to_params_json(),
+                params=params_json,
                 confidence=fc.confidence,
                 updated_at=now,
             )
@@ -325,7 +358,9 @@ class PredictorService:
             print(f"Predictor learned from manual change: product={product_id}, forecast={fc.expected_days_left} days")
             
         except Exception as e:
+            import traceback
             print(f"Error in predictor learning from manual change: {e}")
+            print(traceback.format_exc())
     
     def learn_from_purchase(self, user_id, product_id, quantity: float = 1.0, log_id = None) -> None:
         """
@@ -370,12 +405,16 @@ class PredictorService:
                 fc = predict(state, now, mult, cfg)
                 state = stamp_last_prediction(state, fc)
                 
+                # Convert params to JSON-serializable format
+                params_json = state.to_params_json()
+                params_json = self._make_json_serializable(params_json)
+                
                 # Save the updated predictor state
                 self.repo.upsert_predictor_state(
                     user_id=user_id,
                     product_id=product_id,
                     predictor_profile_id=predictor_profile_id,
-                    params=state.to_params_json(),
+                    params=params_json,
                     confidence=fc.confidence,
                     updated_at=now,
                 )
@@ -413,11 +452,15 @@ class PredictorService:
             fc = predict(state, now, mult, cfg)
             state = stamp_last_prediction(state, fc)
             
+            # Convert params to JSON-serializable format
+            params_json = state.to_params_json()
+            params_json = self._make_json_serializable(params_json)
+            
             self.repo.upsert_predictor_state(
                 user_id=user_id,
                 product_id=product_id,
                 predictor_profile_id=predictor_profile_id,
-                params=state.to_params_json(),
+                params=params_json,
                 confidence=fc.confidence,
                 updated_at=now,
             )

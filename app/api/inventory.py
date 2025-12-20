@@ -30,10 +30,19 @@ def get_predictor_service(supabase: Client = Depends(get_supabase)) -> Predictor
 @router.get("", response_model=List[InventoryResponse])
 def get_inventory(
     user_id: UUID,
+    category_id: Optional[UUID] = None,
+    state: Optional[str] = None,
+    search: Optional[str] = None,
     service: InventoryService = Depends(get_inventory_service)
 ):
-    """Get all inventory items for a user"""
-    items = service.get_inventory(user_id)
+    """
+    Get all inventory items for a user with optional filtering.
+    
+    - category_id: Filter by product category
+    - state: Filter by inventory state (FULL, MEDIUM, LOW, EMPTY, UNKNOWN)
+    - search: Search by product name (case-insensitive)
+    """
+    items = service.get_inventory(user_id, category_id=category_id, state=state, search=search)
     return items
 
 
@@ -83,14 +92,14 @@ def update_inventory(
     
     # ALWAYS trigger predictor to learn from the change (but don't overwrite manual changes)
     if inventory.state is not None:
-        try:
-            background_tasks.add_task(
-                predictor_service.learn_from_manual_change,
-                user_id=user_id,
-                product_id=product_id
-            )
-        except Exception as e:
-            print(f"Error scheduling predictor update: {e}")
+      try:
+        background_tasks.add_task(
+          predictor_service.learn_from_manual_change,
+          user_id=str(user_id),
+          product_id=str(product_id)
+        )
+      except Exception as e:
+        print(f"Error scheduling predictor update: {e}")
     
     return item
 
