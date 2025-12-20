@@ -163,11 +163,19 @@ class SupabasePantryRepository:
     
     def get_active_habit_multiplier(self, user_id: str, product_id: str, category_id: Optional[str], now: datetime) -> float:
         """Get habit multiplier from active habits"""
-        result = self.supabase.table("habits").select("effects").eq("user_id", user_id).eq("status", "ACTIVE").execute()
+        try:
+            result = self.supabase.table("habits").select("effects").eq("user_id", user_id).eq("status", "ACTIVE").execute()
+        except Exception as e:
+            # If there's a network error or any other issue, return default multiplier
+            print(f"Warning: Could not fetch habits for multiplier calculation: {e}")
+            return 1.0
         
         mult = 1.0
         pid = str(product_id)
         cid = str(category_id) if category_id else None
+        
+        if not result.data:
+            return 1.0
         
         for row in result.data:
             effects = row.get("effects") or {}

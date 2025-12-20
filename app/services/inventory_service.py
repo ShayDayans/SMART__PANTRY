@@ -23,8 +23,27 @@ class InventoryService:
         search: Optional[str] = None
     ) -> List[dict]:
         """Get all inventory items for a user with optional filtering"""
-        # Select with products join to get category info
+        # If filtering by category, first get all product_ids in that category
+        product_ids_filter = None
+        if category_id:
+            products_response = self.supabase.table("products").select("product_id").eq("category_id", str(category_id)).execute()
+            if products_response.data:
+                product_ids = [item["product_id"] for item in products_response.data]
+                if product_ids:
+                    product_ids_filter = product_ids
+                else:
+                    # No products in this category, return empty list
+                    return []
+        
+        # Build query
         query = self.supabase.table("inventory").select("*, products(*, product_categories(*))").eq("user_id", str(user_id))
+        
+        # Filter by category (server-side using product_ids)
+        if product_ids_filter:
+            # Supabase PostgREST supports filtering by array using .in_()
+            # Convert UUIDs to strings for filtering
+            product_ids_str = [str(pid) for pid in product_ids_filter]
+            query = query.in_("product_id", product_ids_str)
         
         # Filter by state
         if state:
@@ -33,16 +52,7 @@ class InventoryService:
         response = query.execute()
         results = response.data if response.data else []
         
-        # Filter by category (client-side filtering after join)
-        if category_id:
-            category_id_str = str(category_id)
-            results = [
-                item for item in results
-                if isinstance(item.get("products"), dict) 
-                and item.get("products", {}).get("category_id") == category_id_str
-            ]
-        
-        # Apply search filter (client-side filtering)
+        # Apply search filter (client-side filtering as it's text search)
         if search:
             search_lower = search.lower()
             results = [
