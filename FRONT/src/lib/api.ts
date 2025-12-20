@@ -1,7 +1,15 @@
 import axios from 'axios'
 import { supabase } from './supabase'
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api/v1'
+// Get API URL - ensure it includes /api/v1
+const envApiUrl = process.env.NEXT_PUBLIC_API_URL
+const baseUrl = envApiUrl || 'http://localhost:8000/api/v1'
+const API_URL = baseUrl.endsWith('/api/v1') ? baseUrl : `${baseUrl.replace(/\/$/, '')}/api/v1`
+
+// Debug: Log API URL
+console.log('🔍 [API] Configuration:')
+console.log('  NEXT_PUBLIC_API_URL:', envApiUrl || '❌ NOT SET')
+console.log('  Final API_URL:', API_URL)
 
 export const api = axios.create({
   baseURL: API_URL,

@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { DashboardLayout } from '@/components/layouts/DashboardLayout'
 import { Camera, Upload, CheckCircle, XCircle, Loader2, Package, Plus, Minus } from 'lucide-react'
 import axios from 'axios'
+import { api } from '@/lib/api'
 import { useAuthStore } from '@/store/useAuthStore'
 
 interface ScannedItem {
@@ -58,8 +59,8 @@ export default function ReturnShoppingPage() {
       formData.append('file', file)
       formData.append('user_id', user.id)
 
-      const response = await axios.post<ScanResult>(
-        'http://localhost:8000/api/v1/receipts/scan',
+      const response = await api.post<ScanResult>(
+        '/receipts/scan',
         formData,
         {
           headers: {
@@ -135,7 +136,7 @@ export default function ReturnShoppingPage() {
 
   const loadProducts = async () => {
     try {
-      const response = await axios.get('http://localhost:8000/api/v1/products')
+      const response = await api.get('/products')
       setAllProducts(response.data)
     } catch (error) {
       console.error('Error loading products:', error)
@@ -188,12 +189,9 @@ export default function ReturnShoppingPage() {
         confidence: item.confidence
       }))
 
-      await axios.post(
-        `http://localhost:8000/api/v1/receipts/${scanResult.receipt_id}/confirm`,
-        confirmed_items,
-        {
-          params: { user_id: user.id }
-        }
+      await api.post(
+        `/receipts/${scanResult.receipt_id}/confirm?user_id=${user.id}`,
+        confirmed_items
       )
 
       setSuccess(true)

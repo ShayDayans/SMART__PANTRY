@@ -19,7 +19,7 @@ import {
   Calendar
 } from 'lucide-react'
 import { motion } from 'framer-motion'
-import axios from 'axios'
+import { api } from '@/lib/api'
 
 interface Stats {
   inventory: {
@@ -72,7 +72,7 @@ export default function DashboardPage() {
   const loadStats = async () => {
     try {
       setLoadingStats(true)
-      const response = await axios.get(`http://localhost:8000/api/v1/stats/${user?.id}`)
+      const response = await api.get(`/stats/${user?.id}`)
       setStats(response.data)
     } catch (error) {
       console.error('Error loading statistics:', error)

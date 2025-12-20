@@ -6,7 +6,6 @@ import { useAuthStore } from '@/store/useAuthStore'
 import { DashboardLayout } from '@/components/layouts/DashboardLayout'
 import { api } from '@/lib/api'
 import { Package, Trash2, RefreshCw, Plus, TrendingUp, Clock, Search, Filter, X } from 'lucide-react'
-import axios from 'axios'
 
 interface InventoryItem {
   product_id: string
@@ -177,8 +176,8 @@ export default function PantryPage() {
       const inventoryWithPredictions = await Promise.all(
         inventoryData.map(async (item: InventoryItem) => {
           try {
-            const predictionResponse = await axios.get(
-              `http://localhost:8000/api/v1/predictor/forecast/${user?.id}/${item.product_id}`
+            const predictionResponse = await api.get(
+              `/predictor/forecast/${user?.id}/${item.product_id}`
             )
             const prediction = predictionResponse.data
             
