@@ -1,0 +1,4 @@
+"""
+Smart Pantry API Application
+"""
+
