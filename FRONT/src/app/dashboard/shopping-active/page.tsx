@@ -65,7 +65,7 @@ export default function ShoppingActivePage() {
 
   const loadUserPreferences = async () => {
     try {
-      const response = await api.get(`/habits/preferences?user_id=${user?.id}`)
+      const response = await api.get(`/habits/preferences`)
       if (response.data?.shopping_frequency) {
         // Parse shopping frequency (e.g., "WEEKLY" -> 7 days)
         const freq = response.data.shopping_frequency
@@ -172,11 +172,20 @@ export default function ShoppingActivePage() {
   const handleCompleteShopping = async () => {
     try {
       // Complete shopping list - this will update inventory to FULL and update predictor model
-      await api.post(`/shopping-lists/${listId}/complete?user_id=${user?.id}`)
+      const response = await api.post(`/shopping-lists/${listId}/complete`)
+      
+      // Show success message with details
+      const inventoryUpdates = response.data?.inventory_updates || []
+      if (inventoryUpdates.length > 0) {
+        const productNames = inventoryUpdates.map((item: any) => item.product_name).join(', ')
+        alert(`✅ Successfully added ${inventoryUpdates.length} item(s) to pantry: ${productNames}`)
+      } else {
+        alert('⚠️ No items were added to pantry. Make sure you marked items as "BOUGHT" before completing shopping.')
+      }
 
       // If there are selected unbought items, create a new list for next time
       if (selectedUnboughtIds.size > 0) {
-        const nextListResponse = await api.post(`/shopping-lists?user_id=${user?.id}`, {
+        const nextListResponse = await api.post(`/shopping-lists`, {
           title: `Next Shopping List - ${new Date().toLocaleDateString('en-US')}`,
           status: 'ACTIVE',
         })
@@ -200,8 +209,8 @@ export default function ShoppingActivePage() {
         }
       }
 
-      // Redirect to shopping page
-      router.push('/dashboard/shopping')
+      // Redirect to pantry page to see the updated inventory
+      router.push('/dashboard/pantry')
     } catch (error) {
       console.error('Error completing shopping:', error)
       alert('Error completing shopping. Please try again.')

@@ -72,7 +72,7 @@ export default function DashboardPage() {
   const loadStats = async () => {
     try {
       setLoadingStats(true)
-      const response = await api.get(`/stats/${user?.id}`)
+      const response = await api.get(`/stats/${user?.user_id}`)
       setStats(response.data)
     } catch (error) {
       console.error('Error loading statistics:', error)

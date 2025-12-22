@@ -135,7 +135,7 @@ export default function HabitsPage() {
 
   const loadPreferences = async () => {
     try {
-      const response = await api.get(`/habits/preferences?user_id=${user?.id}`)
+      const response = await api.get(`/habits/preferences`)
       if (response.data) {
         setPreferences({
           household_size: response.data.household_size || null,
@@ -157,7 +157,7 @@ export default function HabitsPage() {
 
   const loadChatHistory = async () => {
     try {
-      const response = await api.get(`/habits/inputs?user_id=${user?.id}`)
+      const response = await api.get(`/habits/inputs`)
       if (response.data) {
         const messages: ChatMessage[] = []
         response.data.forEach((input: any) => {
@@ -209,7 +209,7 @@ export default function HabitsPage() {
       // Try to get existing habits, but if it fails, assume there are none
       let existingHabits = null
       try {
-        const response = await api.get(`/habits?user_id=${user.id}&type=HOUSEHOLD`)
+        const response = await api.get(`/habits?type=HOUSEHOLD`)
         existingHabits = response.data
       } catch (getError: any) {
         // If GET fails (404 or other), assume no existing habits and proceed with POST
@@ -219,9 +219,9 @@ export default function HabitsPage() {
 
       // If we have existing habits, update; otherwise create new
       if (existingHabits && existingHabits.length > 0) {
-        await api.put(`/habits/${existingHabits[0].habit_id}?user_id=${user.id}`, habitData)
+        await api.put(`/habits/${existingHabits[0].habit_id}`, habitData)
       } else {
-        await api.post(`/habits?user_id=${user.id}`, habitData)
+        await api.post(`/habits`, habitData)
       }
       alert('Preferences saved successfully!')
     } catch (error: any) {
@@ -252,9 +252,8 @@ export default function HabitsPage() {
     setChatLoading(true)
 
     try {
-      const response = await api.post(`/habits/chat?user_id=${user.id}`, {
+      const response = await api.post(`/habits/chat`, {
         message: chatInput,
-        user_id: user.id,
       })
 
       const assistantMessage: ChatMessage = {

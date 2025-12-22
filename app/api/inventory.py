@@ -7,6 +7,7 @@ from uuid import UUID
 from supabase import Client
 
 from app.db.supabase_client import get_supabase
+from app.core.dependencies import get_current_user_id
 from app.services.inventory_service import InventoryService
 from app.services.predictor_service import PredictorService
 from app.schemas.inventory import (
@@ -29,7 +30,7 @@ def get_predictor_service(supabase: Client = Depends(get_supabase)) -> Predictor
 
 @router.get("", response_model=List[InventoryResponse])
 def get_inventory(
-    user_id: UUID,
+    user_id: UUID = Depends(get_current_user_id),
     category_id: Optional[UUID] = None,
     state: Optional[str] = None,
     search: Optional[str] = None,
@@ -48,8 +49,8 @@ def get_inventory(
 
 @router.get("/{product_id}", response_model=InventoryResponse)
 def get_inventory_item(
-    user_id: UUID,
     product_id: UUID,
+    user_id: UUID = Depends(get_current_user_id),
     service: InventoryService = Depends(get_inventory_service)
 ):
     """Get a specific inventory item"""
@@ -61,8 +62,8 @@ def get_inventory_item(
 
 @router.post("", response_model=InventoryResponse, status_code=status.HTTP_201_CREATED)
 def create_inventory(
-    user_id: UUID,
     inventory: InventoryCreate,
+    user_id: UUID = Depends(get_current_user_id),
     service: InventoryService = Depends(get_inventory_service)
 ):
     """Create or update an inventory item"""
@@ -72,10 +73,10 @@ def create_inventory(
 
 @router.put("/{product_id}", response_model=InventoryResponse)
 def update_inventory(
-    user_id: UUID,
     product_id: UUID,
     inventory: InventoryUpdate,
     background_tasks: BackgroundTasks,
+    user_id: UUID = Depends(get_current_user_id),
     service: InventoryService = Depends(get_inventory_service),
     predictor_service: PredictorService = Depends(get_predictor_service)
 ):
@@ -106,8 +107,8 @@ def update_inventory(
 
 @router.delete("/{product_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_inventory(
-    user_id: UUID,
     product_id: UUID,
+    user_id: UUID = Depends(get_current_user_id),
     service: InventoryService = Depends(get_inventory_service)
 ):
     """Delete an inventory item"""
@@ -118,9 +119,9 @@ def delete_inventory(
 
 @router.post("/log", response_model=InventoryLogResponse, status_code=status.HTTP_201_CREATED)
 def create_inventory_log(
-    user_id: UUID,
     log: InventoryLogCreate,
     background_tasks: BackgroundTasks,
+    user_id: UUID = Depends(get_current_user_id),
     service: InventoryService = Depends(get_inventory_service),
     predictor_service: PredictorService = Depends(get_predictor_service)
 ):
@@ -143,9 +144,9 @@ def create_inventory_log(
 @router.post("/{product_id}/feedback")
 def provide_feedback(
     product_id: UUID,
-    user_id: UUID,
     direction: str = Query(..., description="Feedback direction: 'more' or 'less'"),
     background_tasks: BackgroundTasks = BackgroundTasks(),
+    user_id: UUID = Depends(get_current_user_id),
     service: InventoryService = Depends(get_inventory_service),
     predictor_service: PredictorService = Depends(get_predictor_service)
 ):
@@ -213,9 +214,9 @@ def provide_feedback(
 
 @router.get("/log", response_model=List[InventoryLogResponse])
 def get_inventory_logs(
-    user_id: UUID,
     product_id: Optional[UUID] = None,
     limit: int = 100,
+    user_id: UUID = Depends(get_current_user_id),
     service: InventoryService = Depends(get_inventory_service)
 ):
     """Get inventory logs for a user"""

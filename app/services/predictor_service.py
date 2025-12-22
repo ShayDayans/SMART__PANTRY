@@ -26,6 +26,32 @@ except ImportError:
     print("Warning: Predictor modules not available. Install required dependencies.")
 
 
+def get_default_category_priors_by_name() -> Dict[str, Dict[str, float]]:
+    """
+    Returns default category priors (mean_days, mad_days) by category name.
+    These are used for new users before they have personalized data.
+    
+    Priors are based on typical consumption patterns:
+    - mean_days: Average days until product runs out
+    - mad_days: Mean Absolute Deviation (variability)
+    """
+    return {
+        "Dairy & Eggs": {"mean_days": 5.0, "mad_days": 2.0},  # נגמר מהר
+        "Bread & Bakery": {"mean_days": 4.0, "mad_days": 1.5},  # נגמר מהר מאוד
+        "Meat & Poultry": {"mean_days": 4.0, "mad_days": 2.0},  # נגמר מהר
+        "Fish & Seafood": {"mean_days": 3.0, "mad_days": 1.5},  # נגמר מהר מאוד
+        "Fruits": {"mean_days": 6.0, "mad_days": 2.5},  # בינוני
+        "Vegetables": {"mean_days": 5.0, "mad_days": 2.0},  # בינוני
+        "Grains & Pasta": {"mean_days": 35.0, "mad_days": 10.0},  # נשמר הרבה זמן
+        "Canned & Jarred": {"mean_days": 75.0, "mad_days": 15.0},  # נשמר הרבה זמן
+        "Condiments & Sauces": {"mean_days": 45.0, "mad_days": 15.0},  # נשמר זמן
+        "Snacks": {"mean_days": 10.0, "mad_days": 5.0},  # בינוני
+        "Beverages": {"mean_days": 7.0, "mad_days": 3.0},  # בינוני
+        "Frozen Foods": {"mean_days": 45.0, "mad_days": 15.0},  # נשמר זמן
+        "Spices & Seasonings": {"mean_days": 75.0, "mad_days": 20.0},  # נשמר הרבה זמן
+    }
+
+
 class SupabasePantryRepository:
     """
     Adapter that makes Supabase client work like the PostgreSQL repository
@@ -35,13 +61,53 @@ class SupabasePantryRepository:
     def __init__(self, supabase: Client):
         self.supabase = supabase
     
+    def _get_default_category_priors(self) -> Dict[str, Dict[str, float]]:
+        """
+        Get default category priors mapped by category_id.
+        Loads all categories from DB and maps them to default priors by name.
+        """
+        try:
+            # Get all categories from database
+            categories_result = self.supabase.table("product_categories").select("category_id, category_name").execute()
+            categories = categories_result.data if categories_result.data else []
+            
+            # Get default priors by name
+            name_priors = get_default_category_priors_by_name()
+            
+            # Map category_id to priors
+            category_priors = {}
+            for cat in categories:
+                category_name = cat.get("category_name", "")
+                category_id = str(cat.get("category_id", ""))
+                
+                # Find matching prior by category name (case-insensitive)
+                prior = None
+                for name, prior_data in name_priors.items():
+                    if name.lower() == category_name.lower():
+                        prior = prior_data
+                        break
+                
+                # If no match found, use default
+                if prior is None:
+                    prior = {"mean_days": 7.0, "mad_days": 2.0}
+                
+                category_priors[category_id] = prior
+            
+            return category_priors
+        except Exception as e:
+            print(f"Warning: Could not load category priors: {e}")
+            # Return empty dict - will use default in init_state_from_category
+            return {}
+    
     def get_active_predictor_profile(self, user_id: str) -> Dict[str, Any]:
         """Get active predictor profile for user"""
         result = self.supabase.table("predictor_profiles").select("*").eq("user_id", user_id).eq("is_active", True).limit(1).execute()
         if not result.data:
-            # Create default profile if none exists
+            # Create default profile with category priors for all existing categories
+            category_priors = self._get_default_category_priors()
+            
             default_config = {
-                "category_priors": {},
+                "category_priors": category_priors,
                 "alpha_strong": 0.25,
                 "alpha_weak": 0.10,
                 "alpha_confirm": 0.05,

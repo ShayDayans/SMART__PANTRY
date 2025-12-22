@@ -77,10 +77,29 @@ export default function ShoppingPage() {
   const loadShoppingLists = async () => {
     try {
       setLoadingLists(true)
-      const response = await api.get(`/shopping-lists?user_id=${user?.id}&status=ACTIVE`)
-      setShoppingLists(response.data)
-      if (response.data.length > 0) {
-        setActiveList(response.data[0])
+      const response = await api.get(`/shopping-lists?status=ACTIVE`)
+      const lists = response.data || []
+      setShoppingLists(lists)
+      
+      // Update activeList if it exists and matches current activeList
+      if (lists.length > 0) {
+        if (activeList) {
+          // Find the updated version of the current active list
+          const updatedActiveList = lists.find(
+            (list: ShoppingList) => list.shopping_list_id === activeList.shopping_list_id
+          )
+          if (updatedActiveList) {
+            setActiveList(updatedActiveList)
+          } else {
+            // If current active list not found, use first one
+            setActiveList(lists[0])
+          }
+        } else {
+          // No active list, set first one
+          setActiveList(lists[0])
+        }
+      } else {
+        setActiveList(null)
       }
     } catch (error) {
       console.error('Error loading shopping lists:', error)
@@ -91,7 +110,7 @@ export default function ShoppingPage() {
 
   const loadPastLists = async () => {
     try {
-      const response = await api.get(`/shopping-lists?user_id=${user?.id}&status=COMPLETED`)
+      const response = await api.get(`/shopping-lists?status=COMPLETED`)
       setPastLists(response.data)
     } catch (error) {
       console.error('Error loading past lists:', error)
@@ -109,7 +128,7 @@ export default function ShoppingPage() {
 
   const createNewList = async (includeFrequent: boolean = false) => {
     try {
-      const response = await api.post(`/shopping-lists?user_id=${user?.id}`, {
+      const response = await api.post(`/shopping-lists`, {
         title: `Shopping List - ${new Date().toLocaleDateString('en-US')}`,
         status: 'ACTIVE',
       })
@@ -139,10 +158,17 @@ export default function ShoppingPage() {
         status: 'PLANNED',
         added_by: 'USER',
       })
+      
+      // Reload the active list with items to get the updated data
+      const updatedListResponse = await api.get(`/shopping-lists/${activeList.shopping_list_id}`)
+      setActiveList(updatedListResponse.data)
+      
+      // Also reload all lists to keep them in sync
       await loadShoppingLists()
       setNewItemText('')
     } catch (error) {
       console.error('Error adding item:', error)
+      alert('Failed to add item. Please try again.')
     }
   }
 

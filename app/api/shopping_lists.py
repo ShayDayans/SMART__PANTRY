@@ -7,6 +7,7 @@ from uuid import UUID
 from supabase import Client
 
 from app.db.supabase_client import get_supabase
+from app.core.dependencies import get_current_user_id
 from app.services.shopping_list_service import ShoppingListService
 from app.services.predictor_service import PredictorService
 from app.schemas.shopping_list import (
@@ -30,8 +31,8 @@ def get_predictor_service(supabase: Client = Depends(get_supabase)) -> Predictor
 # Shopping Lists
 @router.get("", response_model=List[ShoppingListResponse])
 def get_shopping_lists(
-    user_id: UUID,
     status: Optional[str] = None,
+    user_id: UUID = Depends(get_current_user_id),
     service: ShoppingListService = Depends(get_shopping_list_service)
 ):
     """Get all shopping lists for a user"""
@@ -53,8 +54,8 @@ def get_shopping_list(
 
 @router.post("", response_model=ShoppingListResponse, status_code=status.HTTP_201_CREATED)
 def create_shopping_list(
-    user_id: UUID,
     shopping_list: ShoppingListCreate,
+    user_id: UUID = Depends(get_current_user_id),
     service: ShoppingListService = Depends(get_shopping_list_service)
 ):
     """Create a new shopping list"""
@@ -147,8 +148,8 @@ def delete_shopping_list_item(
 @router.post("/{shopping_list_id}/complete")
 def complete_shopping_list(
     shopping_list_id: UUID,
-    user_id: UUID,
     background_tasks: BackgroundTasks,
+    user_id: UUID = Depends(get_current_user_id),
     service: ShoppingListService = Depends(get_shopping_list_service),
     predictor_service: PredictorService = Depends(get_predictor_service)
 ):

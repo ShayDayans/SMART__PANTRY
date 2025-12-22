@@ -117,7 +117,7 @@ export default function AddToPantryPage() {
         displayed_name: displayName || selectedProduct.product_name,
       }
 
-      await api.post(`/inventory?user_id=${user?.id}`, inventoryData)
+      await api.post(`/inventory`, inventoryData)
       
       alert('Item added to pantry successfully!')
       router.push('/dashboard/pantry')

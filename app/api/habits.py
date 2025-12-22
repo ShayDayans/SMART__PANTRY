@@ -7,6 +7,7 @@ from uuid import UUID
 from supabase import Client
 
 from app.db.supabase_client import get_supabase
+from app.core.dependencies import get_current_user_id
 from app.services.habit_service import HabitService
 from app.schemas.habit import (
     HabitCreate, HabitResponse, HabitUpdate,
@@ -25,9 +26,9 @@ def get_habit_service(supabase: Client = Depends(get_supabase)) -> HabitService:
 
 @router.get("", response_model=List[HabitResponse])
 def get_habits(
-    user_id: UUID,
     type: Optional[HabitType] = None,
     status: Optional[HabitStatus] = None,
+    user_id: UUID = Depends(get_current_user_id),
     service: HabitService = Depends(get_habit_service)
 ):
     """Get all habits for a user"""
@@ -37,7 +38,7 @@ def get_habits(
 
 @router.get("/preferences", response_model=dict)
 def get_user_preferences(
-    user_id: UUID,
+    user_id: UUID = Depends(get_current_user_id),
     service: HabitService = Depends(get_habit_service)
 ):
     """Get aggregated user preferences from habits"""
@@ -47,8 +48,8 @@ def get_user_preferences(
 
 @router.get("/{habit_id}", response_model=HabitResponse)
 def get_habit(
-    user_id: UUID,
     habit_id: UUID,
+    user_id: UUID = Depends(get_current_user_id),
     service: HabitService = Depends(get_habit_service)
 ):
     """Get a specific habit by ID"""
@@ -60,8 +61,8 @@ def get_habit(
 
 @router.post("", response_model=HabitResponse, status_code=status.HTTP_201_CREATED)
 def create_habit(
-    user_id: UUID,
     habit: HabitCreate,
+    user_id: UUID = Depends(get_current_user_id),
     service: HabitService = Depends(get_habit_service)
 ):
     """Create a new habit"""
@@ -74,9 +75,9 @@ def create_habit(
 
 @router.put("/{habit_id}", response_model=HabitResponse)
 def update_habit(
-    user_id: UUID,
     habit_id: UUID,
     habit: HabitUpdate,
+    user_id: UUID = Depends(get_current_user_id),
     service: HabitService = Depends(get_habit_service)
 ):
     """Update a habit"""
@@ -88,8 +89,8 @@ def update_habit(
 
 @router.delete("/{habit_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_habit(
-    user_id: UUID,
     habit_id: UUID,
+    user_id: UUID = Depends(get_current_user_id),
     service: HabitService = Depends(get_habit_service)
 ):
     """Delete a habit"""
@@ -101,8 +102,8 @@ def delete_habit(
 
 @router.post("/inputs", response_model=HabitInputResponse, status_code=status.HTTP_201_CREATED)
 def create_habit_input(
-    user_id: UUID,
     habit_input: HabitInputCreate,
+    user_id: UUID = Depends(get_current_user_id),
     service: HabitService = Depends(get_habit_service)
 ):
     """Create a new habit input (chat message)"""
@@ -115,8 +116,8 @@ def create_habit_input(
 
 @router.get("/inputs", response_model=List[HabitInputResponse])
 def get_habit_inputs(
-    user_id: UUID,
     habit_id: Optional[UUID] = None,
+    user_id: UUID = Depends(get_current_user_id),
     service: HabitService = Depends(get_habit_service)
 ):
     """Get all habit inputs for a user"""
@@ -127,8 +128,8 @@ def get_habit_inputs(
 
 @router.post("/chat", response_model=ChatResponse)
 def chat_with_llm(
-    user_id: UUID,
     message: ChatMessage,
+    user_id: UUID = Depends(get_current_user_id),
     service: HabitService = Depends(get_habit_service)
 ):
     """

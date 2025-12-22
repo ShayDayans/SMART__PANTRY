@@ -44,16 +44,21 @@ npm install
 
 ### 3. הגדרת משתני סביבה
 
-צור קובץ `.env.local` בתיקיית השורש:
+**⚠️ חשוב: כל משתמש צריך ליצור את הקובץ `.env.local` בתיקיית `FRONT/`!**
+
+📖 **הוראות מפורטות:** ראה `FRONT/ENV_SETUP.md`
+
+**בקצרה:**
+1. צור קובץ `.env.local` בתיקיית `FRONT/` (לא בתיקיית השורש!)
+2. העתק את התוכן הבא:
 
 ```env
 # Supabase
-NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
-NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
-SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+NEXT_PUBLIC_SUPABASE_URL=https://ceyynxrnsuggncjmpwhv.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNleXlueHJuc3VnZ25jam1wd2h2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjU5NjExNzgsImV4cCI6MjA4MTUzNzE3OH0.ZyftH-9apfSUhGD0Ou_dQaUmhzhTJGsq1iL9BHQcY4k
 
 # API
-NEXT_PUBLIC_API_URL=http://localhost:8000
+NEXT_PUBLIC_API_URL=http://localhost:8000/api/v1
 ```
 
 צור קובץ `.env` בתיקיית השורש עבור Backend:

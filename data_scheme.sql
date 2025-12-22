@@ -52,12 +52,12 @@ do $$ begin
 exception when duplicate_object then null; end $$;
 
 -- -------------------------
--- Household Profile (recommended Supabase approach)
+-- Household Profile (using custom users table)
 -- -------------------------
 create table if not exists profiles (
-  user_id        uuid primary key references auth.users(id) on delete cascade,
+  user_id        uuid primary key references users(user_id) on delete cascade,
   username       text,
-  email          text, -- optional mirror; auth.users is the source of truth
+  email          text, -- optional mirror; users is the source of truth
   created_at     timestamptz not null default now()
 );
 
@@ -81,7 +81,7 @@ create table if not exists products (
 -- Inventory snapshot (current belief per product per household)
 -- -------------------------
 create table if not exists inventory (
-  user_id        uuid not null references auth.users(id) on delete cascade,
+  user_id        uuid not null references users(user_id) on delete cascade,
   product_id     uuid not null references products(product_id) on delete cascade,
   state          inventory_state not null default 'UNKNOWN',
 
@@ -104,7 +104,7 @@ create table if not exists inventory (
 -- -------------------------
 create table if not exists receipts (
   receipt_id     uuid primary key default gen_random_uuid(),
-  user_id        uuid not null references auth.users(id) on delete cascade,
+  user_id        uuid not null references users(user_id) on delete cascade,
 
   store_name     text,
   purchased_at   timestamptz,
@@ -140,7 +140,7 @@ create table if not exists receipt_items (
 -- -------------------------
 create table if not exists shopping_list (
   shopping_list_id uuid primary key default gen_random_uuid(),
-  user_id          uuid not null references auth.users(id) on delete cascade,
+  user_id          uuid not null references users(user_id) on delete cascade,
 
   title            text,
   status           shopping_list_status not null default 'ACTIVE',
@@ -181,7 +181,7 @@ create table if not exists shopping_list_items (
 -- -------------------------
 create table if not exists inventory_log (
   log_id           uuid primary key default gen_random_uuid(),
-  user_id          uuid not null references auth.users(id) on delete cascade,
+  user_id          uuid not null references users(user_id) on delete cascade,
   product_id       uuid not null references products(product_id) on delete cascade,
 
   action           inventory_action not null,
@@ -202,7 +202,7 @@ create table if not exists inventory_log (
 -- -------------------------
 create table if not exists habits (
   habit_id        uuid primary key default gen_random_uuid(),
-  user_id         uuid not null references auth.users(id) on delete cascade,
+  user_id         uuid not null references users(user_id) on delete cascade,
 
   type            habit_type not null default 'OTHER',
   status          habit_status not null default 'ACTIVE',
@@ -221,7 +221,7 @@ create table if not exists habits (
 
 create table if not exists habit_inputs (
   habit_input_id  uuid primary key default gen_random_uuid(),
-  user_id         uuid not null references auth.users(id) on delete cascade,
+  user_id         uuid not null references users(user_id) on delete cascade,
   habit_id        uuid references habits(habit_id) on delete set null,
 
   source          habit_input_source not null default 'CHAT',
@@ -238,7 +238,7 @@ create table if not exists habit_inputs (
 -- -------------------------
 create table if not exists predictor_profiles (
   predictor_profile_id uuid primary key default gen_random_uuid(),
-  user_id              uuid not null references auth.users(id) on delete cascade,
+  user_id              uuid not null references users(user_id) on delete cascade,
 
   name                 text not null,
   method               predictor_method not null default 'EMA',
@@ -254,7 +254,7 @@ on predictor_profiles(user_id)
 where is_active;
 
 create table if not exists product_predictor_state (
-  user_id              uuid not null references auth.users(id) on delete cascade,
+  user_id              uuid not null references users(user_id) on delete cascade,
   product_id           uuid not null references products(product_id) on delete cascade,
 
   predictor_profile_id uuid not null references predictor_profiles(predictor_profile_id) on delete cascade,
@@ -271,7 +271,7 @@ create table if not exists product_predictor_state (
 -- -------------------------
 create table if not exists inventory_forecasts (
   forecast_id       uuid primary key default gen_random_uuid(),
-  user_id           uuid not null references auth.users(id) on delete cascade,
+  user_id           uuid not null references users(user_id) on delete cascade,
   product_id        uuid not null references products(product_id) on delete cascade,
 
   generated_at      timestamptz not null default now(),

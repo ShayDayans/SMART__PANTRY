@@ -41,7 +41,7 @@ export default function ProfitabilityPage() {
   const loadData = async () => {
     try {
       // Load receipts data for analysis
-      const response = await api.get(`/receipts?user_id=${user?.id}&limit=100`)
+      const response = await api.get(`/receipts?limit=100`)
       const receipts = response.data
 
       // Process data for charts

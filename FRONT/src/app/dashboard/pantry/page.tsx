@@ -169,7 +169,7 @@ export default function PantryPage() {
   const loadInventory = async () => {
     try {
       setLoadingInventory(true)
-      const response = await api.get(`/inventory?user_id=${user?.id}`)
+      const response = await api.get(`/inventory`)
       const inventoryData = response.data
       
       // Load predictions for each item
@@ -177,7 +177,7 @@ export default function PantryPage() {
         inventoryData.map(async (item: InventoryItem) => {
           try {
             const predictionResponse = await api.get(
-              `/predictor/forecast/${user?.id}/${item.product_id}`
+              `/predictor/forecast/${item.product_id}`
             )
             const prediction = predictionResponse.data
             
@@ -238,7 +238,7 @@ export default function PantryPage() {
 
   const provideFeedback = async (productId: string, direction: string, productName: string) => {
     try {
-      await api.post(`/inventory/${productId}/feedback?user_id=${user?.id}&direction=${direction}`)
+      await api.post(`/inventory/${productId}/feedback?direction=${direction}`)
       
       // Show notification
       setNotification(`✓ Model updated`)
@@ -267,7 +267,7 @@ export default function PantryPage() {
     }
 
     try {
-      await api.delete(`/inventory/${productId}?user_id=${user?.id}`)
+      await api.delete(`/inventory/${productId}`)
       await loadInventory()
     } catch (error) {
       console.error('Error deleting item:', error)

@@ -31,6 +31,11 @@ class Settings(BaseSettings):
     # CORS
     cors_origins: List[str] = ["*"]
     
+    # JWT Authentication
+    jwt_secret_key: str = "your-secret-key-change-this-in-production"  # Change this in production!
+    jwt_algorithm: str = "HS256"
+    jwt_expire_minutes: int = 60 * 24 * 7  # 7 days
+    
     class Config:
         env_file = str(ENV_FILE_PATH)
         env_file_encoding = "utf-8"

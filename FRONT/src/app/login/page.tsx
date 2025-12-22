@@ -2,14 +2,14 @@
 
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { supabase } from '@/lib/supabase'
+import { api } from '@/lib/api'
 import { useAuthStore } from '@/store/useAuthStore'
 import { Package, Mail, Lock, User, Sparkles } from 'lucide-react'
 import { motion } from 'framer-motion'
 
 export default function LoginPage() {
   const router = useRouter()
-  const { setUser, setSession } = useAuthStore()
+  const { setUser, setCredentials } = useAuthStore()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [username, setUsername] = useState('')
@@ -24,39 +24,61 @@ export default function LoginPage() {
 
     try {
       if (isSignUp) {
-        const { data, error } = await supabase.auth.signUp({
+        // Register new user
+        const response = await api.post('/auth/register', {
           email,
           password,
-          options: {
-            data: {
-              username,
-            },
-          },
+          username: username || undefined,
         })
 
-        if (error) throw error
-
-        if (data.user) {
-          setUser(data.user)
-          setSession(data.session)
+        if (response.data) {
+          // Save credentials and user info
+          setCredentials(email, password)
+          setUser(response.data)
           router.push('/user-profile')
         }
       } else {
-        const { data, error } = await supabase.auth.signInWithPassword({
+        // Login existing user - verify credentials
+        const loginResponse = await api.post('/auth/login', {
           email,
           password,
         })
 
-        if (error) throw error
-
-        if (data.user) {
-          setUser(data.user)
-          setSession(data.session)
+        if (loginResponse.data) {
+          // Save credentials and user info
+          // loginResponse.data is the user object directly
+          setCredentials(email, password)
+          setUser(loginResponse.data)
           router.push('/dashboard')
         }
       }
     } catch (err: any) {
-      setError(err.message)
+      console.error('Auth error:', err)
+      
+      // Handle specific error types
+      if (err.response?.status === 401) {
+        setError(
+          '❌ Invalid email or password.\n\n' +
+          'Please check your credentials and try again.'
+        )
+      } else if (err.response?.status === 400) {
+        const detail = err.response?.data?.detail || 'Bad request'
+        if (detail.includes('already registered')) {
+          setError('❌ Email already registered. Please sign in instead.')
+        } else {
+          setError(detail)
+        }
+      } else if (err.response?.status === 429) {
+        setError(
+          '⚠️ Too many attempts. Please wait a few minutes and try again.'
+        )
+      } else {
+        setError(
+          err.response?.data?.detail || 
+          err.message || 
+          'An error occurred. Please try again.'
+        )
+      }
     } finally {
       setLoading(false)
     }
@@ -177,7 +199,7 @@ export default function LoginPage() {
                 animate={{ opacity: 1, scale: 1 }}
                 className="bg-red-50 border-2 border-red-200 text-red-700 px-4 py-3 rounded-xl"
               >
-                <p className="text-sm font-medium">{error}</p>
+                <p className="text-sm font-medium whitespace-pre-line">{error}</p>
               </motion.div>
             )}
 

@@ -57,7 +57,7 @@ export default function ReturnShoppingPage() {
       // Upload and scan receipt
       const formData = new FormData()
       formData.append('file', file)
-      formData.append('user_id', user.id)
+      // user_id is now extracted from JWT token automatically
 
       const response = await api.post<ScanResult>(
         '/receipts/scan',
@@ -190,7 +190,7 @@ export default function ReturnShoppingPage() {
       }))
 
       await api.post(
-        `/receipts/${scanResult.receipt_id}/confirm?user_id=${user.id}`,
+        `/receipts/${scanResult.receipt_id}/confirm`,
         confirmed_items
       )
 

@@ -7,6 +7,7 @@ from uuid import UUID
 from supabase import Client
 
 from app.db.supabase_client import get_supabase
+from app.core.dependencies import get_current_user_id
 from app.services.predictor_service import PredictorService
 
 router = APIRouter(prefix="/predictor", tags=["predictor"])
@@ -22,8 +23,8 @@ def get_predictor_service(supabase: Client = Depends(get_supabase)) -> Predictor
 
 @router.post("/process-log/{log_id}")
 def process_inventory_log(
-    user_id: UUID,
     log_id: UUID,
+    user_id: UUID = Depends(get_current_user_id),
     service: PredictorService = Depends(get_predictor_service)
 ):
     """Process an inventory log event and update predictions"""
@@ -34,9 +35,9 @@ def process_inventory_log(
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.post("/refresh/{user_id}")
+@router.post("/refresh")
 def refresh_predictions(
-    user_id: UUID,
+    user_id: UUID = Depends(get_current_user_id),
     service: PredictorService = Depends(get_predictor_service)
 ):
     """Refresh predictions for all products in user's inventory"""
@@ -47,10 +48,10 @@ def refresh_predictions(
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.get("/forecast/{user_id}/{product_id}")
+@router.get("/forecast/{product_id}")
 def get_product_forecast(
-    user_id: UUID,
     product_id: UUID,
+    user_id: UUID = Depends(get_current_user_id),
     supabase: Client = Depends(get_supabase)
 ):
     """Get the latest forecast for a specific product"""

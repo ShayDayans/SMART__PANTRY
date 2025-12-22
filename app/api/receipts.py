@@ -7,6 +7,7 @@ from uuid import UUID
 from supabase import Client
 
 from app.db.supabase_client import get_supabase
+from app.core.dependencies import get_current_user_id
 from app.core.config import settings
 from app.services.receipt_service import ReceiptService
 from app.services.receipt_processing_service import ReceiptProcessingService
@@ -33,8 +34,8 @@ def get_receipt_processing_service(supabase: Client = Depends(get_supabase)) -> 
 
 @router.get("", response_model=List[ReceiptResponse])
 def get_receipts(
-    user_id: UUID,
     limit: int = 100,
+    user_id: UUID = Depends(get_current_user_id),
     service: ReceiptService = Depends(get_receipt_service)
 ):
     """Get all receipts for a user"""
@@ -56,8 +57,8 @@ def get_receipt(
 
 @router.post("", response_model=ReceiptResponse, status_code=status.HTTP_201_CREATED)
 def create_receipt(
-    user_id: UUID,
     receipt: ReceiptCreate,
+    user_id: UUID = Depends(get_current_user_id),
     service: ReceiptService = Depends(get_receipt_service)
 ):
     """Create a new receipt with items"""
@@ -91,8 +92,8 @@ def delete_receipt(
 
 @router.post("/scan")
 async def scan_receipt(
-    user_id: str = Form(...),
     file: UploadFile = File(...),
+    user_id: UUID = Depends(get_current_user_id),
     processing_service: ReceiptProcessingService = Depends(get_receipt_processing_service)
 ):
     """
@@ -109,7 +110,7 @@ async def scan_receipt(
         
         # Process receipt (scan + match, but don't add to inventory yet)
         result = processing_service.scan_and_match_receipt(
-            user_id=UUID(user_id),
+            user_id=user_id,
             image_data=file_data,
             file_name=file.filename,
             content_type=file.content_type
@@ -126,8 +127,8 @@ async def scan_receipt(
 @router.post("/{receipt_id}/confirm")
 def confirm_receipt_and_add_to_inventory(
     receipt_id: str,
-    user_id: UUID,
     confirmed_items: List[dict],
+    user_id: UUID = Depends(get_current_user_id),
     processing_service: ReceiptProcessingService = Depends(get_receipt_processing_service)
 ):
     """

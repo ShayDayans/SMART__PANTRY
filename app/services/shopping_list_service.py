@@ -148,6 +148,12 @@ class ShoppingListService:
         product_service = ProductService(self.supabase)
         
         for item in items:
+            # Only process items that are marked as BOUGHT
+            item_status = item.get("status", "").upper()
+            if item_status != "BOUGHT":
+                # Skip items that are not marked as bought
+                continue
+            
             product_id = item.get("product_id")
             if not product_id:
                 # Skip items without product_id (free_text items)
