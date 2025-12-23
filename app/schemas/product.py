@@ -34,6 +34,11 @@ class ProductUpdate(BaseModel):
     default_unit: Optional[str] = None
 
 
+class ProductCategoryUpdate(BaseModel):
+    """Schema for updating only product category"""
+    category_id: Optional[UUID] = Field(None, description="Category ID to assign. Set to null to remove category.")
+
+
 class ProductResponse(BaseModel):
     product_id: UUID
     product_name: str

@@ -37,9 +37,13 @@ class InventoryResponse(BaseModel):
     last_updated_at: datetime
     last_source: str
     displayed_name: Optional[str] = None
+    # Include nested products data
+    products: Optional[dict] = None
     
     class Config:
         from_attributes = True
+        # Allow extra fields to preserve nested products structure
+        extra = "allow"
 
 
 class InventoryLogCreate(BaseModel):
@@ -69,3 +73,9 @@ class InventoryLogResponse(BaseModel):
     class Config:
         from_attributes = True
 
+
+class ProductActionRequest(BaseModel):
+    """Schema for product action (thrown away, repurchased, ran out)"""
+    action_type: str = Field(..., description="Action type: 'thrown_away', 'repurchased', or 'ran_out'")
+    reason: str = Field(..., description="Selected reason from predefined options")
+    custom_reason: Optional[str] = Field(None, description="Custom reason if 'other' was selected")

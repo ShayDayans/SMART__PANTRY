@@ -213,7 +213,9 @@ export default function HabitsPage() {
         existingHabits = response.data
       } catch (getError: any) {
         // If GET fails (404 or other), assume no existing habits and proceed with POST
-        console.log('No existing habits found, will create new one')
+        if (typeof window !== 'undefined') {
+          console.log('No existing habits found, will create new one')
+        }
         existingHabits = null
       }
 

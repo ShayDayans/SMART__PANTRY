@@ -24,6 +24,12 @@ interface Product {
   product_id: string
   product_name: string
   category_name?: string
+  category_id?: string
+}
+
+interface Category {
+  category_id: string
+  category_name: string
 }
 
 interface ShoppingListItem {
@@ -35,6 +41,7 @@ interface ShoppingListItem {
   user_qty_override: number | null
   status: string
   priority: number | null
+  created_at?: string
   products?: Product
 }
 
@@ -56,9 +63,18 @@ export default function ShoppingPage() {
   const [showAllProducts, setShowAllProducts] = useState(false)
   const [loadingLists, setLoadingLists] = useState(true)
   const [allProducts, setAllProducts] = useState<Product[]>([])
+  const [categories, setCategories] = useState<Category[]>([])
   const [newItemText, setNewItemText] = useState('')
+  const [filteredProducts, setFilteredProducts] = useState<Product[]>([])
+  const [showProductSuggestions, setShowProductSuggestions] = useState(false)
+  const [showCreateProductModal, setShowCreateProductModal] = useState(false)
+  const [newProductName, setNewProductName] = useState('')
+  const [newProductCategory, setNewProductCategory] = useState<string>('')
+  const [creatingProduct, setCreatingProduct] = useState(false)
   const [editingItem, setEditingItem] = useState<string | null>(null)
   const [editQty, setEditQty] = useState<number>(1)
+  const [notification, setNotification] = useState<string | null>(null)
+  const [recentlyAddedItemId, setRecentlyAddedItemId] = useState<string | null>(null)
 
   useEffect(() => {
     if (!loading && !user) {
@@ -71,10 +87,11 @@ export default function ShoppingPage() {
       loadShoppingLists()
       loadPastLists()
       loadAllProducts()
+      loadCategories()
     }
   }, [user])
 
-  const loadShoppingLists = async () => {
+  const loadShoppingLists = async (reloadActiveListItems: boolean = false) => {
     try {
       setLoadingLists(true)
       const response = await api.get(`/shopping-lists?status=ACTIVE`)
@@ -89,7 +106,26 @@ export default function ShoppingPage() {
             (list: ShoppingList) => list.shopping_list_id === activeList.shopping_list_id
           )
           if (updatedActiveList) {
-            setActiveList(updatedActiveList)
+            // If we need to reload items, fetch the full list with items
+            if (reloadActiveListItems) {
+              try {
+                const fullListResponse = await api.get(`/shopping-lists/${updatedActiveList.shopping_list_id}`)
+                const fullList = fullListResponse.data
+                // Also load items separately to get prediction data
+                const itemsResponse = await api.get(`/shopping-lists/${updatedActiveList.shopping_list_id}/items`)
+                if (fullList) {
+                  fullList.shopping_list_items = itemsResponse.data || []
+                  setActiveList(fullList)
+                } else {
+                  setActiveList(updatedActiveList)
+                }
+              } catch (error) {
+                console.error('Error loading full list with items:', error)
+                setActiveList(updatedActiveList)
+              }
+            } else {
+              setActiveList(updatedActiveList)
+            }
           } else {
             // If current active list not found, use first one
             setActiveList(lists[0])
@@ -119,10 +155,35 @@ export default function ShoppingPage() {
 
   const loadAllProducts = async () => {
     try {
+      // Load ALL products from products table (not just from inventory)
       const response = await api.get('/products')
-      setAllProducts(response.data)
+      console.log('Products API response:', response.data)
+      
+      const products = Array.isArray(response.data) ? response.data : []
+      const productsList: Product[] = products.map((product: any) => ({
+        product_id: product.product_id,
+        product_name: product.product_name,
+        category_id: product.category_id,
+        category_name: product.category?.category_name || undefined
+      }))
+      
+      setAllProducts(productsList)
+      console.log(`✅ Loaded ${productsList.length} products from products table`)
     } catch (error) {
-      console.error('Error loading products:', error)
+      console.error('❌ Error loading products:', error)
+      setAllProducts([])
+    }
+  }
+
+  const loadCategories = async () => {
+    try {
+      const response = await api.get('/products/categories')
+      const categoriesList: Category[] = Array.isArray(response.data) ? response.data : []
+      setCategories(categoriesList)
+      console.log(`✅ Loaded ${categoriesList.length} categories`)
+    } catch (error) {
+      console.error('❌ Error loading categories:', error)
+      setCategories([])
     }
   }
 
@@ -148,10 +209,13 @@ export default function ShoppingPage() {
   }
 
   const addItemToList = async (productId?: string, productName?: string, qty: number = 1) => {
-    if (!activeList) return
+    if (!activeList) {
+      alert('Please create or select a shopping list first')
+      return
+    }
 
     try {
-      await api.post(`/shopping-lists/${activeList.shopping_list_id}/items`, {
+      const response = await api.post(`/shopping-lists/${activeList.shopping_list_id}/items`, {
         product_id: productId || null,
         free_text_name: productName || null,
         recommended_qty: qty,
@@ -159,16 +223,54 @@ export default function ShoppingPage() {
         added_by: 'USER',
       })
       
-      // Reload the active list with items to get the updated data
-      const updatedListResponse = await api.get(`/shopping-lists/${activeList.shopping_list_id}`)
-      setActiveList(updatedListResponse.data)
+      console.log('Item added successfully:', response.data)
       
-      // Also reload all lists to keep them in sync
-      await loadShoppingLists()
+      const addedItemId = response.data?.shopping_list_item_id
+      
+      // Show success notification
+      const productNameToShow = productName || allProducts.find(p => p.product_id === productId)?.product_name || 'Item'
+      setNotification(`✓ Added "${productNameToShow}" to your list`)
+      setTimeout(() => setNotification(null), 3000)
+      
+      // Reload the active list with items to get the updated data
+      // Pass true to reload items immediately
+      await loadShoppingLists(true)
+      
+      // Highlight the newly added item after list reloads
+      if (addedItemId) {
+        // Wait for DOM to update with new item
+        setTimeout(() => {
+          setRecentlyAddedItemId(addedItemId)
+          // Scroll to the item
+          setTimeout(() => {
+            const itemElement = document.getElementById(`item-${addedItemId}`)
+            if (itemElement) {
+              itemElement.scrollIntoView({ behavior: 'smooth', block: 'center' })
+              // Remove highlight after animation
+              setTimeout(() => setRecentlyAddedItemId(null), 3000)
+            } else {
+              // If element not found, try again after a bit more time
+              setTimeout(() => {
+                const retryElement = document.getElementById(`item-${addedItemId}`)
+                if (retryElement) {
+                  retryElement.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                  setTimeout(() => setRecentlyAddedItemId(null), 3000)
+                }
+              }, 500)
+            }
+          }, 100)
+        }, 200)
+      }
+      
+      // Close modal if open
+      setShowFrequentItems(false)
+      setShowAllProducts(false)
       setNewItemText('')
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error adding item:', error)
-      alert('Failed to add item. Please try again.')
+      const errorMessage = error.response?.data?.detail || error.message || 'Failed to add item. Please try again.'
+      setNotification(`✗ ${errorMessage}`)
+      setTimeout(() => setNotification(null), 3000)
     }
   }
 
@@ -203,6 +305,100 @@ export default function ShoppingPage() {
     router.push('/dashboard/special-meal')
   }
 
+  const handleCreateProduct = async () => {
+    if (!newProductName.trim()) {
+      alert('Please enter a product name')
+      return
+    }
+    if (!newProductCategory) {
+      alert('Please select a category (required)')
+      return
+    }
+
+    try {
+      setCreatingProduct(true)
+      const response = await api.post('/products', {
+        product_name: newProductName.trim(),
+        category_id: newProductCategory,
+        default_unit: 'units'
+      })
+      
+      console.log('Product created:', response.data)
+      
+      // Reload products
+      await loadAllProducts()
+      
+      // Add the new product to the shopping list
+      const newProduct = response.data
+      if (activeList) {
+        await addItemToList(newProduct.product_id, undefined, 1)
+      }
+      
+      // Reset form
+      setNewProductName('')
+      setNewProductCategory('')
+      setShowCreateProductModal(false)
+      setNewItemText('')
+    } catch (error: any) {
+      console.error('Error creating product:', error)
+      const errorMessage = error.response?.data?.detail || error.message || 'Failed to create product. Please try again.'
+      alert(errorMessage)
+    } finally {
+      setCreatingProduct(false)
+    }
+  }
+
+  const handleSearchChange = (value: string) => {
+    setNewItemText(value)
+    
+    if (!value.trim()) {
+      setFilteredProducts([])
+      setShowProductSuggestions(false)
+      return
+    }
+
+    // Filter products by name (case-insensitive)
+    const searchTerm = value.toLowerCase().trim()
+    const filtered = allProducts.filter(product =>
+      product.product_name.toLowerCase().includes(searchTerm)
+    )
+    
+    setFilteredProducts(filtered)
+    setShowProductSuggestions(true)
+  }
+
+  const handleSelectProduct = async (product: Product) => {
+    // Close suggestions immediately for better UX
+    setNewItemText('')
+    setFilteredProducts([])
+    setShowProductSuggestions(false)
+    
+    // Add product to list
+    await addItemToList(product.product_id, undefined, 1)
+  }
+
+  const handleFreeTextAdd = async () => {
+    if (!newItemText.trim()) {
+      return
+    }
+
+    // Check if the text exactly matches an existing product name (case-insensitive)
+    const exactMatch = allProducts.find(
+      p => p.product_name.toLowerCase() === newItemText.trim().toLowerCase()
+    )
+    
+    if (exactMatch) {
+      // It's an existing product - add it to the list
+      await handleSelectProduct(exactMatch)
+      return
+    }
+
+    // It's a new product name - open create product modal
+    setNewProductName(newItemText.trim())
+    setShowCreateProductModal(true)
+    setShowProductSuggestions(false)
+  }
+
   if (loading || !user) {
     return (
       <div className="flex items-center justify-center min-h-screen">
@@ -214,6 +410,24 @@ export default function ShoppingPage() {
   return (
     <DashboardLayout>
       <div className="px-4 py-6 sm:px-0 max-w-7xl mx-auto">
+        {/* Notification Toast */}
+        <AnimatePresence>
+          {notification && (
+            <motion.div
+              initial={{ opacity: 0, y: -20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -20 }}
+              className="fixed top-4 right-4 z-50"
+            >
+              <div className={`${
+                notification.startsWith('✓') ? 'bg-green-500' : 'bg-red-500'
+              } text-white px-6 py-4 rounded-xl shadow-2xl flex items-center gap-3 max-w-md`}>
+                <span className="text-lg font-semibold">{notification}</span>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
         {/* Header */}
         <motion.div 
           initial={{ opacity: 0, y: -20 }}
@@ -296,14 +510,22 @@ export default function ShoppingPage() {
                   {allProducts.map((product) => (
                     <div
                       key={product.product_id}
-                      className="flex items-center justify-between p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors"
+                      className="flex items-center justify-between p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors cursor-pointer"
+                      onClick={async () => {
+                        await addItemToList(product.product_id, undefined, 1)
+                        // Modal will close automatically in addItemToList, showing the shopping list
+                      }}
                     >
-                      <div>
+                      <div className="flex-1">
                         <p className="font-medium text-gray-900">{product.product_name}</p>
                         <p className="text-sm text-gray-500">{product.category_name}</p>
                       </div>
                       <button
-                        onClick={() => addItemToList(product.product_id, undefined, 1)}
+                        onClick={async (e) => {
+                          e.stopPropagation()
+                          await addItemToList(product.product_id, undefined, 1)
+                          // Modal will close automatically in addItemToList, showing the shopping list
+                        }}
                         className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 flex items-center gap-2"
                       >
                         <Plus className="h-4 w-4" />
@@ -322,6 +544,104 @@ export default function ShoppingPage() {
                 >
                   Done
                 </button>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Create Product Modal */}
+        <AnimatePresence>
+          {showCreateProductModal && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+              onClick={() => {
+                setShowCreateProductModal(false)
+                setNewProductName('')
+                setNewProductCategory('')
+              }}
+            >
+              <motion.div
+                initial={{ scale: 0.9, opacity: 0 }}
+                animate={{ scale: 1, opacity: 1 }}
+                exit={{ scale: 0.9, opacity: 0 }}
+                className="bg-white rounded-2xl p-6 max-w-md w-full"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="flex justify-between items-center mb-4">
+                  <h3 className="text-2xl font-bold text-gray-900">Create New Product</h3>
+                  <button
+                    onClick={() => {
+                      setShowCreateProductModal(false)
+                      setNewProductName('')
+                      setNewProductCategory('')
+                    }}
+                    className="text-gray-500 hover:text-gray-700"
+                  >
+                    <X className="h-6 w-6" />
+                  </button>
+                </div>
+
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Product Name <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={newProductName}
+                      onChange={(e) => setNewProductName(e.target.value)}
+                      placeholder="Enter product name"
+                      className="w-full px-4 py-3 border-2 border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-900"
+                      autoFocus
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Category <span className="text-red-500">*</span>
+                    </label>
+                    <select
+                      value={newProductCategory}
+                      onChange={(e) => setNewProductCategory(e.target.value)}
+                      className="w-full px-4 py-3 border-2 border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-900"
+                    >
+                      <option value="">Select a category (required)</option>
+                      {categories.map((category) => (
+                        <option key={category.category_id} value={category.category_id}>
+                          {category.category_name}
+                        </option>
+                      ))}
+                    </select>
+                    {categories.length === 0 && (
+                      <p className="text-xs text-yellow-600 mt-1">
+                        No categories available. Please create a category first.
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="flex gap-3 pt-4">
+                    <button
+                      onClick={() => {
+                        setShowCreateProductModal(false)
+                        setNewProductName('')
+                        setNewProductCategory('')
+                      }}
+                      className="flex-1 px-4 py-3 border-2 border-gray-300 rounded-xl hover:bg-gray-50 text-gray-700 font-medium transition-colors"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={handleCreateProduct}
+                      disabled={!newProductName.trim() || !newProductCategory || creatingProduct}
+                      className="flex-1 px-4 py-3 bg-blue-600 text-white rounded-xl hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed font-medium transition-colors"
+                    >
+                      {creatingProduct ? 'Creating...' : 'Create & Add'}
+                    </button>
+                  </div>
+                </div>
               </motion.div>
             </motion.div>
           )}
@@ -348,33 +668,97 @@ export default function ShoppingPage() {
                   </button>
                 </div>
 
-                {/* Add Item Input */}
+                {/* Add Item Input - Search with Autocomplete */}
                 <div className="mb-6">
-                  <div className="flex gap-2">
-                    <input
-                      type="text"
-                      value={newItemText}
-                      onChange={(e) => setNewItemText(e.target.value)}
-                      placeholder="Add item to list..."
-                      onKeyPress={(e) => {
-                        if (e.key === 'Enter' && newItemText.trim()) {
-                          addItemToList(undefined, newItemText.trim())
-                        }
-                      }}
-                      className="flex-1 px-4 py-3 border-2 border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-900 placeholder:text-gray-400"
-                    />
+                  <div className="flex gap-2 relative">
+                    <div className="flex-1 relative">
+                      <input
+                        type="text"
+                        value={newItemText}
+                        onChange={(e) => handleSearchChange(e.target.value)}
+                        onFocus={() => {
+                          if (newItemText.trim()) {
+                            handleSearchChange(newItemText)
+                          } else {
+                            // Show all products when focused and empty
+                            setFilteredProducts(allProducts)
+                            setShowProductSuggestions(true)
+                          }
+                        }}
+                        onBlur={() => {
+                          // Delay hiding to allow clicks on suggestions
+                          setTimeout(() => setShowProductSuggestions(false), 200)
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault()
+                            if (filteredProducts.length > 0) {
+                              // If there are suggestions, select the first one
+                              handleSelectProduct(filteredProducts[0])
+                            } else {
+                              // No match - try to add or create
+                              handleFreeTextAdd()
+                            }
+                          } else if (e.key === 'Escape') {
+                            setShowProductSuggestions(false)
+                          }
+                        }}
+                        placeholder="Search products or type new product name..."
+                        className="w-full px-4 py-3 border-2 border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-900 bg-white"
+                      />
+                      
+                      {/* Product Suggestions Dropdown */}
+                      {showProductSuggestions && filteredProducts.length > 0 && (
+                        <div className="absolute z-10 w-full mt-1 bg-white border-2 border-gray-200 rounded-xl shadow-lg max-h-60 overflow-y-auto">
+                          {filteredProducts.map((product) => (
+                            <div
+                              key={product.product_id}
+                              onClick={() => handleSelectProduct(product)}
+                              className="px-4 py-3 hover:bg-blue-50 cursor-pointer border-b border-gray-100 last:border-b-0 transition-colors"
+                            >
+                              <div className="font-medium text-gray-900">{product.product_name}</div>
+                              {product.category_name && (
+                                <div className="text-sm text-gray-500">{product.category_name}</div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      
+                      {/* Create New Product Option */}
+                      {showProductSuggestions && newItemText.trim() && filteredProducts.length === 0 && (
+                        <div className="absolute z-10 w-full mt-1 bg-white border-2 border-gray-200 rounded-xl shadow-lg">
+                          <div
+                            onClick={() => {
+                              setNewProductName(newItemText.trim())
+                              setShowCreateProductModal(true)
+                              setShowProductSuggestions(false)
+                            }}
+                            className="px-4 py-3 hover:bg-green-50 cursor-pointer transition-colors border-b border-gray-100"
+                          >
+                            <div className="font-medium text-gray-900 flex items-center gap-2">
+                              <Plus className="h-4 w-4 text-green-600" />
+                              Create new product: "{newItemText.trim()}"
+                            </div>
+                            <div className="text-sm text-gray-500 mt-1">Click to create and add to list</div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
                     <button
-                      onClick={() => {
-                        if (newItemText.trim()) {
-                          addItemToList(undefined, newItemText.trim())
-                        }
-                      }}
-                      className="bg-blue-600 text-white px-6 py-3 rounded-xl hover:bg-blue-700 flex items-center gap-2"
+                      onClick={handleFreeTextAdd}
+                      disabled={!newItemText.trim()}
+                      className="bg-blue-600 text-white px-6 py-3 rounded-xl hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed flex items-center gap-2 transition-all"
                     >
                       <Plus className="h-5 w-5" />
                       Add
                     </button>
                   </div>
+                  <p className="text-xs text-gray-500 mt-2">
+                    {allProducts.length > 0 
+                      ? `${allProducts.length} products available. Search or create a new product.`
+                      : 'Type a product name to create a new product (category required).'}
+                  </p>
                 </div>
 
                 {/* Special Meal Button */}
@@ -394,12 +778,40 @@ export default function ShoppingPage() {
                       <p className="text-gray-500">Your list is empty</p>
                     </div>
                   ) : (
-                    activeList.shopping_list_items.map((item) => (
+                    // Sort items: by priority (desc) then created_at (asc)
+                    [...activeList.shopping_list_items]
+                      .sort((a, b) => {
+                        // Sort by priority (higher first, nulls last)
+                        const priorityA = a.priority ?? -1
+                        const priorityB = b.priority ?? -1
+                        if (priorityA !== priorityB) {
+                          return priorityB - priorityA
+                        }
+                        // Then by created_at (older first)
+                        const dateA = new Date(a.created_at || 0).getTime()
+                        const dateB = new Date(b.created_at || 0).getTime()
+                        return dateA - dateB
+                      })
+                      .map((item) => (
                       <motion.div
                         key={item.shopping_list_item_id}
+                        id={`item-${item.shopping_list_item_id}`}
                         initial={{ opacity: 0, x: -20 }}
-                        animate={{ opacity: 1, x: 0 }}
-                        className="flex items-center justify-between p-4 bg-gray-50 rounded-xl hover:bg-gray-100 transition-colors"
+                        animate={{ 
+                          opacity: 1, 
+                          x: 0,
+                          backgroundColor: recentlyAddedItemId === item.shopping_list_item_id 
+                            ? 'rgb(220 252 231)' // green-100
+                            : 'rgb(249 250 251)' // gray-50
+                        }}
+                        transition={{
+                          backgroundColor: { duration: 0.3 }
+                        }}
+                        className={`flex items-center justify-between p-4 rounded-xl hover:bg-gray-100 transition-colors ${
+                          recentlyAddedItemId === item.shopping_list_item_id 
+                            ? 'ring-2 ring-green-500 shadow-lg' 
+                            : ''
+                        }`}
                       >
                         <div className="flex-1">
                           <p className="font-medium text-gray-900">

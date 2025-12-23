@@ -88,13 +88,15 @@ def delete_shopping_list(
 
 
 # Shopping List Items
-@router.get("/{shopping_list_id}/items", response_model=List[ShoppingListItemResponse])
+@router.get("/{shopping_list_id}/items")
 def get_shopping_list_items(
     shopping_list_id: UUID,
+    user_id: UUID = Depends(get_current_user_id),
     service: ShoppingListService = Depends(get_shopping_list_service)
 ):
-    """Get all items in a shopping list"""
-    items = service.get_shopping_list_items(shopping_list_id)
+    """Get all items in a shopping list with prediction data"""
+    items = service.get_shopping_list_items(shopping_list_id, user_id=user_id)
+    # Return raw dicts to preserve prediction data
     return items
 
 
@@ -114,10 +116,11 @@ def get_shopping_list_item(
 def create_shopping_list_item(
     shopping_list_id: UUID,
     item: ShoppingListItemCreate,
+    user_id: UUID = Depends(get_current_user_id),
     service: ShoppingListService = Depends(get_shopping_list_service)
 ):
     """Create a new shopping list item"""
-    new_item = service.create_shopping_list_item(shopping_list_id, item)
+    new_item = service.create_shopping_list_item(shopping_list_id, item, user_id=user_id)
     return new_item
 
 

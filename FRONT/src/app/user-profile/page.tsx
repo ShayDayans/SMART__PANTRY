@@ -78,7 +78,9 @@ export default function UserProfilePage() {
       // Save to habits table via API
       if (user) {
         // This will be implemented when we add habits API
-        console.log('Saving profile:', formData)
+        if (typeof window !== 'undefined') {
+          console.log('Saving profile:', formData)
+        }
         router.push('/dashboard')
       }
     } catch (error) {

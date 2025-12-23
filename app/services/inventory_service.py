@@ -35,8 +35,18 @@ class InventoryService:
                     # No products in this category, return empty list
                     return []
         
-        # Build query
-        query = self.supabase.table("inventory").select("*, products(*, product_categories(*))").eq("user_id", str(user_id))
+        # Build query - get inventory with products
+        # First get basic inventory with products (without nested categories)
+        query = self.supabase.table("inventory").select(
+            "*, "
+            "products("
+            "product_id, "
+            "product_name, "
+            "category_id, "
+            "default_unit, "
+            "barcode"
+            ")"
+        ).eq("user_id", str(user_id))
         
         # Filter by category (server-side using product_ids)
         if product_ids_filter:
@@ -49,8 +59,75 @@ class InventoryService:
         if state:
             query = query.eq("state", state)
         
-        response = query.execute()
-        results = response.data if response.data else []
+        try:
+            response = query.execute()
+            results = response.data if response.data else []
+            
+            # Debug: log first item structure to see what we're getting
+            if results and len(results) > 0:
+                import json
+                print(f"[DEBUG Inventory] Total items: {len(results)}")
+                print(f"[DEBUG Inventory] First item structure: {json.dumps(results[0], indent=2, default=str)}")
+                
+                # Check if products and categories are present
+                first_item = results[0]
+                if "products" in first_item:
+                    products_data = first_item["products"]
+                    print(f"[DEBUG Inventory] Products data type: {type(products_data)}")
+                    print(f"[DEBUG Inventory] Products data: {json.dumps(products_data, indent=2, default=str)}")
+                else:
+                    print(f"[DEBUG Inventory] WARNING: No 'products' key in inventory item!")
+        except Exception as e:
+            print(f"[ERROR Inventory] Failed to execute query: {e}")
+            import traceback
+            traceback.print_exc()
+            results = []
+        
+        # Post-process: Fetch and attach category information
+        # Get all unique category_ids from products
+        category_ids = set()
+        for item in results:
+            if "products" in item and isinstance(item["products"], dict):
+                products = item["products"]
+                category_id = products.get("category_id")
+                if category_id:
+                    category_ids.add(str(category_id))
+        
+        # Fetch all categories in one query
+        categories_map = {}
+        if category_ids:
+            try:
+                categories_response = self.supabase.table("product_categories").select(
+                    "category_id, category_name"
+                ).in_("category_id", list(category_ids)).execute()
+                
+                if categories_response.data:
+                    for cat in categories_response.data:
+                        categories_map[str(cat["category_id"])] = cat
+            except Exception as e:
+                print(f"[WARNING Inventory] Failed to fetch categories: {e}")
+        
+        # Attach category information to each product
+        for item in results:
+            if "products" in item and isinstance(item["products"], dict):
+                products = item["products"]
+                category_id = products.get("category_id")
+                
+                # Debug: log category_id for each item
+                if category_id:
+                    print(f"[DEBUG Inventory] Item {item.get('product_id')}: category_id={category_id}")
+                    category_id_str = str(category_id)
+                    if category_id_str in categories_map:
+                        # Attach category info directly to products
+                        products["product_categories"] = categories_map[category_id_str]
+                        print(f"[DEBUG Inventory] Attached category {categories_map[category_id_str].get('category_name')} to product {item.get('product_id')}")
+                    else:
+                        print(f"[WARNING Inventory] Category {category_id_str} not found in categories_map")
+                else:
+                    print(f"[DEBUG Inventory] Item {item.get('product_id')}: No category_id")
+            else:
+                # Debug: log if products is missing or wrong type
+                print(f"[WARNING Inventory] Item {item.get('product_id')}: products missing or wrong type. Has 'products' key: {'products' in item}, Type: {type(item.get('products'))}")
         
         # Apply search filter (client-side filtering as it's text search)
         if search:

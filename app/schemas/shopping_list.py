@@ -51,6 +51,9 @@ class ShoppingListItemUpdate(BaseModel):
     user_qty_override: Optional[float] = None
     status: Optional[ShoppingItemStatus] = None
     priority: Optional[int] = None
+    sufficiency_marked: Optional[bool] = Field(None, description="User marked if quantity is sufficient")
+    actual_qty_purchased: Optional[float] = Field(None, description="Actual quantity purchased")
+    qty_feedback: Optional[str] = Field(None, description="Feedback: LESS, MORE, EXACT, NOT_ENOUGH")
 
 
 class ShoppingListItemResponse(BaseModel):

@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation'
 import { useAuthStore } from '@/store/useAuthStore'
 import { DashboardLayout } from '@/components/layouts/DashboardLayout'
 import { api } from '@/lib/api'
-import { Package, Trash2, RefreshCw, Plus, TrendingUp, Clock, Search, Filter, X } from 'lucide-react'
+import { Package, Trash2, RefreshCw, Plus, TrendingUp, Clock, Search, Filter, X, Edit2, Check, AlertCircle } from 'lucide-react'
 
 interface InventoryItem {
   product_id: string
@@ -15,6 +15,8 @@ interface InventoryItem {
   confidence: number
   displayed_name: string | null
   products?: {
+    product_id?: string
+    product_name?: string
     category_id?: string
     product_categories?: {
       category_id: string
@@ -35,6 +37,41 @@ interface Category {
   category_name: string
 }
 
+// Helper function to get category name from item
+const getCategoryName = (item: InventoryItem, categories: Category[]): string | null => {
+  // Try multiple ways to get category name:
+  // 1. From nested product_categories object (can be object or array)
+  if (item.products?.product_categories) {
+    if (typeof item.products.product_categories === 'object' && !Array.isArray(item.products.product_categories)) {
+      // It's an object
+      if (item.products.product_categories.category_name) {
+        return item.products.product_categories.category_name
+      }
+    } else if (Array.isArray(item.products.product_categories) && item.products.product_categories.length > 0) {
+      // It's an array
+      if (item.products.product_categories[0]?.category_name) {
+        return item.products.product_categories[0].category_name
+      }
+    }
+  }
+  
+  // 2. From category_id - look up in categories list
+  const categoryId = item.products?.category_id
+  if (categoryId) {
+    // Try exact match first
+    let category = categories.find(c => c.category_id === categoryId)
+    if (!category) {
+      // Try string comparison (in case of UUID format differences)
+      category = categories.find(c => String(c.category_id).toLowerCase() === String(categoryId).toLowerCase())
+    }
+    if (category) {
+      return category.category_name
+    }
+  }
+  
+  return null
+}
+
 const getStockPercentage = (state: string): number => {
   switch (state) {
     case 'FULL': return 100
@@ -47,7 +84,7 @@ const getStockPercentage = (state: string): number => {
 
 const getStockLabel = (state: string): string => {
   switch (state) {
-    case 'FULL': return 'HIGH'
+    case 'FULL': return 'FULL'
     case 'MEDIUM': return 'MEDIUM'
     case 'LOW': return 'LOW'
     case 'EMPTY': return 'EMPTY'
@@ -108,6 +145,15 @@ export default function PantryPage() {
   const [selectedCategory, setSelectedCategory] = useState<string>('')
   const [selectedState, setSelectedState] = useState<string>('')
   const [searchQuery, setSearchQuery] = useState<string>('')
+  const [editingCategoryFor, setEditingCategoryFor] = useState<string | null>(null)
+  const [selectedCategoryForProduct, setSelectedCategoryForProduct] = useState<{ [key: string]: string }>({})
+  
+  // Product action modal state
+  const [actionModalOpen, setActionModalOpen] = useState(false)
+  const [actionProductId, setActionProductId] = useState<string | null>(null)
+  const [actionType, setActionType] = useState<'thrown_away' | 'repurchased' | 'ran_out' | null>(null)
+  const [actionReason, setActionReason] = useState<string>('')
+  const [actionCustomReason, setActionCustomReason] = useState<string>('')
 
   useEffect(() => {
     if (!loading && !user) {
@@ -126,6 +172,16 @@ export default function PantryPage() {
     filterInventory()
   }, [selectedCategory, selectedState, searchQuery, allInventory])
 
+  // Debug: log when filters change
+  useEffect(() => {
+    console.log('[FILTER DEBUG] Filters changed:', {
+      selectedCategory,
+      selectedState,
+      searchQuery,
+      allInventoryCount: allInventory.length
+    })
+  }, [selectedCategory, selectedState, searchQuery, allInventory.length])
+
   const loadCategories = async () => {
     try {
       const response = await api.get('/products/categories')
@@ -139,11 +195,44 @@ export default function PantryPage() {
     let filtered = [...allInventory]
 
     // Filter by category
-    if (selectedCategory) {
+    if (selectedCategory && selectedCategory !== '') {
+      console.log('[FILTER] Filtering by category:', selectedCategory)
+      console.log('[FILTER] Total items before filter:', filtered.length)
+      
       filtered = filtered.filter((item) => {
-        const categoryId = item.products?.category_id || item.products?.product_categories?.category_id
-        return categoryId === selectedCategory
+        // Get category_id - prioritize direct access from products.category_id
+        const categoryId = item.products?.category_id
+        
+        // Debug logging for first few items
+        if (filtered.indexOf(item) < 3) {
+          console.log(`[FILTER] Item ${item.product_id}:`, {
+            categoryId,
+            products: item.products,
+            hasProducts: !!item.products
+          })
+        }
+        
+        if (!categoryId) {
+          // No category means it doesn't match the selected category
+          return false
+        }
+        
+        // Convert both to strings for comparison (handles UUID vs string)
+        // Use exact match without toLowerCase to preserve UUID format
+        const itemCategoryId = String(categoryId).trim()
+        const selectedCategoryId = String(selectedCategory).trim()
+        
+        const matches = itemCategoryId === selectedCategoryId
+        
+        // Debug logging for first few items
+        if (filtered.indexOf(item) < 3) {
+          console.log(`[FILTER] Item ${item.product_id}: ${itemCategoryId} === ${selectedCategoryId} = ${matches}`)
+        }
+        
+        return matches
       })
+      
+      console.log('[FILTER] Total items after filter:', filtered.length)
     }
 
     // Filter by state
@@ -154,12 +243,14 @@ export default function PantryPage() {
       })
     }
 
-    // Filter by search query
+    // Filter by search query (name filter)
     if (searchQuery) {
-      const query = searchQuery.toLowerCase()
+      const query = searchQuery.toLowerCase().trim()
       filtered = filtered.filter((item) => {
-        const name = (item.displayed_name || item.product_name || '').toLowerCase()
-        return name.includes(query)
+        // Check displayed_name first, then product_name from nested products object
+        const displayedName = (item.displayed_name || '').toLowerCase()
+        const productName = (item.products?.product_name || item.product_name || '').toLowerCase()
+        return displayedName.includes(query) || productName.includes(query)
       })
     }
 
@@ -170,57 +261,47 @@ export default function PantryPage() {
     try {
       setLoadingInventory(true)
       const response = await api.get(`/inventory`)
-      const inventoryData = response.data
+      const inventoryData = response.data || []
       
-      // Load predictions for each item
-      const inventoryWithPredictions = await Promise.all(
-        inventoryData.map(async (item: InventoryItem) => {
-          try {
-            const predictionResponse = await api.get(
-              `/predictor/forecast/${item.product_id}`
-            )
-            const prediction = predictionResponse.data
-            
-            // If prediction exists, use it
-            if (prediction && prediction.predicted_state && prediction.predicted_state !== 'UNKNOWN') {
-              return {
-                ...item,
-                prediction: {
-                  expected_days_left: prediction.expected_days_left || 0,
-                  predicted_state: prediction.predicted_state,
-                  confidence: prediction.confidence || 0,
-                  stock_percentage: getStockPercentage(prediction.predicted_state)
-                }
-              }
-            } else {
-              // No valid prediction - use current inventory state
-              return {
-                ...item,
-                prediction: {
-                  expected_days_left: 0,
-                  predicted_state: item.state !== 'UNKNOWN' ? item.state : 'MEDIUM', // Default to MEDIUM if unknown
-                  confidence: item.confidence,
-                  stock_percentage: getStockPercentage(item.state !== 'UNKNOWN' ? item.state : 'MEDIUM')
-                }
-              }
-            }
-          } catch (error) {
-            // If no prediction or error, use current state
-            return {
-              ...item,
-              prediction: {
-                expected_days_left: 0,
-                predicted_state: item.state !== 'UNKNOWN' ? item.state : 'MEDIUM', // Default to MEDIUM if unknown
-                confidence: item.confidence,
-                stock_percentage: getStockPercentage(item.state !== 'UNKNOWN' ? item.state : 'MEDIUM')
-              }
-            }
+      // Debug: log inventory structure
+      if (inventoryData.length > 0) {
+        console.log('[LOAD INVENTORY] Sample inventory item structure:', JSON.stringify(inventoryData[0], null, 2))
+        // Check category_id specifically
+        const sampleItem = inventoryData[0]
+        console.log('[LOAD INVENTORY] Sample item category_id:', sampleItem.products?.category_id)
+        console.log('[LOAD INVENTORY] Sample item product_categories:', sampleItem.products?.product_categories)
+      }
+      
+      // Use inventory state directly (it's updated by the predictor model)
+      // inventory.state and inventory.estimated_qty are the source of truth
+      const inventoryWithPredictions = inventoryData.map((item: InventoryItem) => {
+        // Use state from inventory table (updated by predictor)
+        const predictedState = item.state !== 'UNKNOWN' ? item.state : 'MEDIUM'
+        const daysLeft = item.estimated_qty || 0
+        
+        // Debug: log category_id for each item
+        if (item.products?.category_id) {
+          console.log(`[LOAD INVENTORY] Item ${item.product_id} has category_id:`, item.products.category_id)
+        } else {
+          console.log(`[LOAD INVENTORY] Item ${item.product_id} has NO category_id`)
+        }
+        
+        return {
+          ...item,
+          prediction: {
+            expected_days_left: daysLeft,
+            predicted_state: predictedState,
+            confidence: item.confidence || 0,
+            stock_percentage: getStockPercentage(predictedState)
           }
-        })
-      )
+        }
+      })
+      
+      console.log('[LOAD INVENTORY] Total items loaded:', inventoryWithPredictions.length)
+      console.log('[LOAD INVENTORY] Items with categories:', inventoryWithPredictions.filter((item: InventoryItem) => item.products?.category_id).length)
       
       setAllInventory(inventoryWithPredictions)
-      setInventory(inventoryWithPredictions)
+      // filterInventory will be called automatically via useEffect
     } catch (error) {
       console.error('Error loading inventory:', error)
     } finally {
@@ -274,6 +355,138 @@ export default function PantryPage() {
     }
   }
 
+  const updateProductCategory = async (productId: string, categoryId: string | null) => {
+    try {
+      console.log('[UPDATE CATEGORY] Starting update:', { productId, categoryId })
+      // Use the new dedicated endpoint for updating category
+      // Send category_id in request body
+      const payload: { category_id: string | null } = { category_id: categoryId }
+      
+      console.log('[UPDATE CATEGORY] Sending payload:', payload)
+      const response = await api.patch(`/products/${productId}/category`, payload)
+      console.log('[UPDATE CATEGORY] Update response:', response.data)
+      
+      setNotification(`✓ Category updated`)
+      setTimeout(() => {
+        setNotification(null)
+      }, 2000)
+      
+      // Reload inventory to show updated category
+      // Add a small delay to ensure DB is updated
+      await new Promise(resolve => setTimeout(resolve, 300))
+      await loadInventory()
+      
+      // Force filter to re-run with new data
+      filterInventory()
+      
+      setEditingCategoryFor(null)
+      // Clear the selected category for this product
+      setSelectedCategoryForProduct(prev => {
+        const next = { ...prev }
+        delete next[productId]
+        return next
+      })
+    } catch (error: any) {
+      console.error('[UPDATE CATEGORY] Error:', error)
+      console.error('[UPDATE CATEGORY] Error response:', error?.response?.data)
+      const errorMessage = error?.response?.data?.detail || 'Failed to update category'
+      setNotification(`❌ ${errorMessage}`)
+      setTimeout(() => {
+        setNotification(null)
+      }, 2000)
+    }
+  }
+
+  const handleCategorySelect = (productId: string, categoryId: string) => {
+    console.log('Category selected:', { productId, categoryId })
+    setSelectedCategoryForProduct(prev => {
+      const updated = { ...prev, [productId]: categoryId }
+      console.log('Updated selectedCategoryForProduct:', updated)
+      return updated
+    })
+  }
+
+  const handleCategorySave = (productId: string) => {
+    const categoryId = selectedCategoryForProduct[productId]
+    // Convert empty string to null
+    const finalCategoryId = categoryId && categoryId.trim() !== '' ? categoryId : null
+    console.log('Saving category for product:', productId, 'category:', finalCategoryId)
+    updateProductCategory(productId, finalCategoryId)
+  }
+
+  // Product action handlers
+  const openActionModal = (productId: string, type: 'thrown_away' | 'repurchased' | 'ran_out') => {
+    setActionProductId(productId)
+    setActionType(type)
+    setActionReason('')
+    setActionCustomReason('')
+    setActionModalOpen(true)
+  }
+
+  const closeActionModal = () => {
+    setActionModalOpen(false)
+    setActionProductId(null)
+    setActionType(null)
+    setActionReason('')
+    setActionCustomReason('')
+  }
+
+  const handleProductAction = async () => {
+    if (!actionProductId || !actionType || !actionReason) {
+      setNotification('❌ Please select a reason')
+      setTimeout(() => setNotification(null), 2000)
+      return
+    }
+
+    try {
+      const payload: {
+        action_type: string
+        reason: string
+        custom_reason?: string
+      } = {
+        action_type: actionType,
+        reason: actionReason,
+      }
+
+      if (actionReason === 'Other' && actionCustomReason.trim()) {
+        payload.custom_reason = actionCustomReason.trim()
+      }
+
+      await api.post(`/inventory/${actionProductId}/action`, payload)
+
+      setNotification('✓ Action completed successfully')
+      setTimeout(() => {
+        setNotification(null)
+      }, 2000)
+
+      closeActionModal()
+      
+      // Reload inventory after a short delay
+      setTimeout(() => {
+        loadInventory()
+      }, 500)
+    } catch (error: any) {
+      console.error('Error performing product action:', error)
+      const errorMessage = error?.response?.data?.detail || 'Failed to perform action'
+      setNotification(`❌ ${errorMessage}`)
+      setTimeout(() => {
+        setNotification(null)
+      }, 2000)
+    }
+  }
+
+  // Get reason options based on action type
+  const getReasonOptions = (type: string): string[] => {
+    if (type === 'thrown_away') {
+      return ['Didn\'t taste good', 'Expired', 'Other']
+    } else if (type === 'repurchased') {
+      return ['Ran out', 'Product was damaged', 'Other']
+    } else if (type === 'ran_out') {
+      return ['Ran out', 'Other']
+    }
+    return []
+  }
+
   const sortedInventory = [...inventory].sort((a, b) => {
     // Sort by stock level: EMPTY -> LOW -> MEDIUM -> FULL
     const aPercentage = a.prediction?.stock_percentage || 0
@@ -299,7 +512,7 @@ export default function PantryPage() {
 
   return (
     <DashboardLayout>
-      <div className="px-4 py-6 sm:px-0 max-w-7xl mx-auto">
+      <div className="px-4 py-6 sm:px-0 max-w-7xl mx-auto" dir="ltr">
         {/* Notification Toast */}
         {notification && (
           <div className="fixed top-4 right-4 z-50 animate-fade-in">
@@ -459,25 +672,115 @@ export default function PantryPage() {
                         {item.displayed_name || item.product_name}
                       </h3>
                       
+                      {/* Category Name with Edit */}
+                      <div className="mb-2">
+                        {editingCategoryFor === item.product_id ? (
+                          <div className="flex items-center gap-2">
+                            <select
+                              value={selectedCategoryForProduct[item.product_id] || item.products?.category_id || ''}
+                              onChange={(e) => handleCategorySelect(item.product_id, e.target.value)}
+                              className="px-3 py-1 rounded-lg text-xs font-semibold border border-purple-300 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                            >
+                              <option value="">No Category</option>
+                              {categories.map((cat) => (
+                                <option key={cat.category_id} value={cat.category_id}>
+                                  {cat.category_name}
+                                </option>
+                              ))}
+                            </select>
+                            <button
+                              onClick={() => handleCategorySave(item.product_id)}
+                              className="p-1 text-green-600 hover:bg-green-50 rounded transition-colors"
+                              title="Save category"
+                            >
+                              <Check className="h-4 w-4" />
+                            </button>
+                            <button
+                              onClick={() => {
+                                setEditingCategoryFor(null)
+                                setSelectedCategoryForProduct(prev => ({
+                                  ...prev,
+                                  [item.product_id]: item.products?.category_id || ''
+                                }))
+                              }}
+                              className="p-1 text-gray-400 hover:bg-gray-50 rounded transition-colors"
+                              title="Cancel"
+                            >
+                              <X className="h-4 w-4" />
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-2">
+                            {(() => {
+                              const categoryName = getCategoryName(item, categories)
+                              return categoryName ? (
+                                <span className="inline-flex items-center px-3 py-1 rounded-lg text-xs font-semibold bg-purple-100 text-purple-700 border border-purple-200">
+                                  {categoryName}
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center px-3 py-1 rounded-lg text-xs font-medium bg-gray-100 text-gray-500 border border-gray-200">
+                                  No Category
+                                </span>
+                              )
+                            })()}
+                            <button
+                              onClick={() => {
+                                const currentCategoryId = item.products?.category_id || ''
+                                console.log('[EDIT CATEGORY] Starting edit for product:', item.product_id, 'current category:', currentCategoryId)
+                                setEditingCategoryFor(item.product_id)
+                                setSelectedCategoryForProduct(prev => ({ 
+                                  ...prev, 
+                                  [item.product_id]: currentCategoryId
+                                }))
+                              }}
+                              className="p-1 text-gray-400 hover:text-purple-600 hover:bg-purple-50 rounded transition-colors"
+                              title="Edit category"
+                            >
+                              <Edit2 className="h-3 w-3" />
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                      
                       {/* State Badge */}
                       <div className="flex items-center gap-2 mb-3">
                         <span className={`inline-flex items-center px-3 py-1 rounded-full text-sm font-bold ${getBadgeColorFromState(predictedState)}`}>
                           {stockLabel}
                         </span>
-                        {item.products?.product_categories?.category_name && (
-                          <span className="inline-flex items-center px-2 py-1 rounded-lg text-xs font-medium bg-gray-100 text-gray-700">
-                            {item.products.product_categories.category_name}
-                          </span>
-                        )}
                       </div>
                     </div>
                     
-                    <button
-                      onClick={() => deleteItem(item.product_id)}
-                      className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-                    >
-                      <Trash2 className="h-5 w-5" />
-                    </button>
+                    <div className="flex gap-2">
+                      {/* Product Action Buttons */}
+                      <button
+                        onClick={() => openActionModal(item.product_id, 'thrown_away')}
+                        className="p-2 text-gray-400 hover:text-orange-600 hover:bg-orange-50 rounded-lg transition-colors"
+                        title="Thrown Away"
+                      >
+                        <Trash2 className="h-5 w-5" />
+                      </button>
+                      <button
+                        onClick={() => openActionModal(item.product_id, 'repurchased')}
+                        className="p-2 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+                        title="Repurchased"
+                      >
+                        <RefreshCw className="h-5 w-5" />
+                      </button>
+                      <button
+                        onClick={() => openActionModal(item.product_id, 'ran_out')}
+                        className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                        title="Ran Out"
+                      >
+                        <AlertCircle className="h-5 w-5" />
+                      </button>
+                      <button
+                        onClick={() => deleteItem(item.product_id)}
+                        className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                        title="Delete product"
+                      >
+                        <X className="h-5 w-5" />
+                      </button>
+                    </div>
                   </div>
 
                   {/* Stock Level Display - LOW/MEDIUM/HIGH */}
@@ -541,6 +844,78 @@ export default function PantryPage() {
           </div>
         )}
       </div>
+
+      {/* Product Action Modal */}
+      {actionModalOpen && actionType && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" dir="ltr">
+          <div className="bg-white rounded-2xl p-6 max-w-md w-full mx-4 shadow-2xl">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-xl font-bold text-gray-900">
+                {actionType === 'thrown_away' && 'Thrown Away'}
+                {actionType === 'repurchased' && 'Repurchased'}
+                {actionType === 'ran_out' && 'Ran Out'}
+              </h3>
+              <button
+                onClick={closeActionModal}
+                className="p-1 text-gray-400 hover:text-gray-600 rounded transition-colors"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                {actionType === 'thrown_away' && 'Why was the product thrown away?'}
+                {actionType === 'repurchased' && 'Why was the product repurchased?'}
+                {actionType === 'ran_out' && 'Why did the product run out?'}
+              </label>
+              <select
+                value={actionReason}
+                onChange={(e) => setActionReason(e.target.value)}
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="">Select reason</option>
+                {getReasonOptions(actionType).map((option) => (
+                  <option key={option} value={option}>
+                    {option}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {actionReason === 'Other' && (
+              <div className="mb-4">
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Please specify
+                </label>
+                <input
+                  type="text"
+                  value={actionCustomReason}
+                  onChange={(e) => setActionCustomReason(e.target.value)}
+                  placeholder="Enter custom reason"
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+            )}
+
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={closeActionModal}
+                className="px-4 py-2 text-gray-600 hover:text-gray-800 rounded-lg transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleProductAction}
+                disabled={!actionReason || (actionReason === 'Other' && !actionCustomReason.trim())}
+                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
+              >
+                Confirm
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </DashboardLayout>
   )
 }

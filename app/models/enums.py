@@ -24,6 +24,7 @@ class InventoryAction(str, Enum):
     ADJUST = "ADJUST"
     TRASH = "TRASH"
     EMPTY = "EMPTY"
+    REPURCHASE = "REPURCHASE"
 
 
 class ShoppingListStatus(str, Enum):

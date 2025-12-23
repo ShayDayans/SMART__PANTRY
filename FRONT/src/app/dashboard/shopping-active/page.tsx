@@ -14,7 +14,8 @@ import {
   ChevronUp, 
   ChevronDown,
   Edit2,
-  Trash2
+  Trash2,
+  TrendingUp
 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 
@@ -34,6 +35,17 @@ interface ShoppingItem {
   status: string
   products?: Product
   durationDays?: number
+  sufficiency_marked?: boolean
+  actual_qty_purchased?: number | null
+  qty_feedback?: string | null
+  prediction?: {
+    predicted_days_left: number
+    predicted_state: string
+    confidence: number
+    recommended_qty?: number
+    will_sufficient?: boolean
+    will_last_days?: number
+  }
 }
 
 export default function ShoppingActivePage() {
@@ -49,6 +61,9 @@ export default function ShoppingActivePage() {
   const [showAddItem, setShowAddItem] = useState(false)
   const [newItemText, setNewItemText] = useState('')
   const [shoppingFrequency, setShoppingFrequency] = useState(7) // Default 7 days
+  const [sufficiencyMarked, setSufficiencyMarked] = useState<{ [key: string]: boolean }>({})
+  const [actualQtyPurchased, setActualQtyPurchased] = useState<{ [key: string]: number | null }>({})
+  const [qtyFeedback, setQtyFeedback] = useState<{ [key: string]: string }>({})
 
   useEffect(() => {
     if (!loading && !user) {
@@ -82,11 +97,23 @@ export default function ShoppingActivePage() {
     try {
       setLoadingItems(true)
       const response = await api.get(`/shopping-lists/${listId}/items`)
-      // Add default duration days to each item
-      const itemsWithDuration = response.data.map((item: ShoppingItem) => ({
-        ...item,
-        durationDays: shoppingFrequency,
-      }))
+      // Add default duration days to each item and restore feedback state
+      const itemsWithDuration = response.data.map((item: ShoppingItem) => {
+        // Restore feedback state from loaded item
+        if (item.sufficiency_marked !== undefined) {
+          setSufficiencyMarked(prev => ({ ...prev, [item.shopping_list_item_id]: item.sufficiency_marked! }))
+        }
+        if (item.actual_qty_purchased !== undefined && item.actual_qty_purchased !== null) {
+          setActualQtyPurchased(prev => ({ ...prev, [item.shopping_list_item_id]: item.actual_qty_purchased! }))
+        }
+        if (item.qty_feedback) {
+          setQtyFeedback(prev => ({ ...prev, [item.shopping_list_item_id]: item.qty_feedback! }))
+        }
+        return {
+          ...item,
+          durationDays: shoppingFrequency,
+        }
+      })
       setItems(itemsWithDuration)
     } catch (error) {
       console.error('Error loading items:', error)
@@ -98,13 +125,47 @@ export default function ShoppingActivePage() {
   const toggleItem = async (item: ShoppingItem) => {
     const newStatus = item.status === 'BOUGHT' ? 'PLANNED' : 'BOUGHT'
     try {
-      await api.put(`/shopping-lists/items/${item.shopping_list_item_id}`, {
-        status: newStatus,
-      })
+      const updateData: any = { status: newStatus }
+      
+      // If marking as BOUGHT, include feedback if available
+      if (newStatus === 'BOUGHT') {
+        const itemId = item.shopping_list_item_id
+        if (sufficiencyMarked[itemId] !== undefined) {
+          updateData.sufficiency_marked = sufficiencyMarked[itemId]
+        }
+        if (actualQtyPurchased[itemId] !== undefined) {
+          updateData.actual_qty_purchased = actualQtyPurchased[itemId]
+        }
+        if (qtyFeedback[itemId]) {
+          updateData.qty_feedback = qtyFeedback[itemId]
+        }
+      }
+      
+      await api.put(`/shopping-lists/items/${item.shopping_list_item_id}`, updateData)
       await loadItems()
     } catch (error) {
       console.error('Error updating item:', error)
     }
+  }
+  
+  const handleSufficiencyToggle = (itemId: string, isSufficient: boolean) => {
+    setSufficiencyMarked(prev => ({ ...prev, [itemId]: isSufficient }))
+    if (!isSufficient) {
+      // If not sufficient, clear feedback (user will set it)
+      setQtyFeedback(prev => {
+        const next = { ...prev }
+        delete next[itemId]
+        return next
+      })
+    }
+  }
+  
+  const handleQtyFeedback = (itemId: string, feedback: string) => {
+    setQtyFeedback(prev => ({ ...prev, [itemId]: feedback }))
+  }
+  
+  const handleActualQtyChange = (itemId: string, qty: number | null) => {
+    setActualQtyPurchased(prev => ({ ...prev, [itemId]: qty }))
   }
 
   const updateQuantity = async (itemId: string, quantity: number) => {
@@ -333,6 +394,86 @@ export default function ShoppingActivePage() {
                               </span>
                             </div>
                           </div>
+
+                          {/* Model Prediction - Simple Display */}
+                          {item.prediction && item.product_id && item.prediction.will_last_days && (
+                            <div className="mt-3 p-3 bg-gradient-to-r from-blue-50 to-indigo-50 rounded-lg border border-blue-200">
+                              <div className="flex items-center justify-between">
+                                <span className="text-sm font-semibold text-gray-700">
+                                  It's for {Math.round(item.prediction.will_last_days)} days
+                                </span>
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Days Prediction Feedback (for items with product_id) */}
+                          {item.product_id && item.status !== 'BOUGHT' && item.prediction?.will_last_days && (
+                            <div className="mt-3 p-3 bg-purple-50 rounded-lg border border-purple-200">
+                              <div className="flex items-center justify-between gap-3">
+                                <span className="text-sm font-medium text-gray-700">
+                                  Will this last:
+                                </span>
+                                <div className="flex gap-2">
+                                  <button
+                                    onClick={async () => {
+                                      // "Will last more" = consumption is slower, cycle_mean_days should increase
+                                      handleQtyFeedback(item.shopping_list_item_id, 'MORE')
+                                      handleSufficiencyToggle(item.shopping_list_item_id, true)
+                                      // Update immediately to save feedback
+                                      try {
+                                        await api.put(`/shopping-lists/items/${item.shopping_list_item_id}`, {
+                                          qty_feedback: 'MORE',
+                                          sufficiency_marked: true
+                                        })
+                                        // Trigger model update immediately
+                                        await api.post(`/predictor/learn-from-shopping-feedback`, {
+                                          shopping_list_item_id: item.shopping_list_item_id,
+                                          feedback: 'MORE'
+                                        })
+                                      } catch (error) {
+                                        console.error('Error saving feedback:', error)
+                                      }
+                                    }}
+                                    className={`px-4 py-2 text-sm rounded-lg transition-colors font-medium ${
+                                      qtyFeedback[item.shopping_list_item_id] === 'MORE' || sufficiencyMarked[item.shopping_list_item_id]
+                                        ? 'bg-green-500 text-white'
+                                        : 'bg-green-100 text-green-700 hover:bg-green-200'
+                                    }`}
+                                  >
+                                    Will Last More
+                                  </button>
+                                  <button
+                                    onClick={async () => {
+                                      // "Will last less" = consumption is faster, cycle_mean_days should decrease
+                                      handleQtyFeedback(item.shopping_list_item_id, 'LESS')
+                                      handleSufficiencyToggle(item.shopping_list_item_id, false)
+                                      // Update immediately to save feedback
+                                      try {
+                                        await api.put(`/shopping-lists/items/${item.shopping_list_item_id}`, {
+                                          qty_feedback: 'LESS',
+                                          sufficiency_marked: false
+                                        })
+                                        // Trigger model update immediately
+                                        await api.post(`/predictor/learn-from-shopping-feedback`, {
+                                          shopping_list_item_id: item.shopping_list_item_id,
+                                          feedback: 'LESS'
+                                        })
+                                      } catch (error) {
+                                        console.error('Error saving feedback:', error)
+                                      }
+                                    }}
+                                    className={`px-4 py-2 text-sm rounded-lg transition-colors font-medium ${
+                                      qtyFeedback[item.shopping_list_item_id] === 'LESS' || (!sufficiencyMarked[item.shopping_list_item_id] && qtyFeedback[item.shopping_list_item_id])
+                                        ? 'bg-red-500 text-white'
+                                        : 'bg-red-100 text-red-700 hover:bg-red-200'
+                                    }`}
+                                  >
+                                    Will Last Less
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+                          )}
 
                           {/* Duration Indicator */}
                           {item.status === 'BOUGHT' && (

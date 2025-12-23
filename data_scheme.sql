@@ -20,7 +20,12 @@ do $$ begin
 exception when duplicate_object then null; end $$;
 
 do $$ begin
-  create type inventory_action as enum ('PURCHASE','ADJUST','TRASH','EMPTY');
+  create type inventory_action as enum ('PURCHASE','ADJUST','TRASH','EMPTY','REPURCHASE');
+exception when duplicate_object then null; end $$;
+
+-- Add REPURCHASE to existing enum if it doesn't exist
+do $$ begin
+  alter type inventory_action add value if not exists 'REPURCHASE';
 exception when duplicate_object then null; end $$;
 
 do $$ begin
@@ -163,6 +168,11 @@ create table if not exists shopping_list_items (
   status                shopping_item_status not null default 'PLANNED',
   priority              integer,
   added_by              item_added_by not null default 'USER',
+
+  -- Feedback fields for model learning
+  sufficiency_marked    boolean,
+  actual_qty_purchased  numeric,
+  qty_feedback          text,  -- 'LESS', 'MORE', 'EXACT', 'NOT_ENOUGH'
 
   created_at            timestamptz not null default now(),
   updated_at            timestamptz not null default now(),

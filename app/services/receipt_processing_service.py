@@ -11,7 +11,7 @@ from app.services.storage_service import StorageService
 from app.services.receipt_scanner_service import ReceiptScannerService, ReceiptScanResult
 from app.services.product_service import ProductService
 from app.services.receipt_service import ReceiptService
-from app.schemas.product import ProductCreate, ProductCategoryCreate
+from app.schemas.product import ProductCreate
 from app.schemas.receipt import ReceiptCreate
 
 
@@ -265,8 +265,11 @@ class ReceiptProcessingService:
                 elif "category_name" in best_match:
                     category_name = best_match["category_name"]
                 
+                # Use existing product as-is (don't update category from DB only)
+                product_id = best_match["product_id"]
+                
                 matched_items.append({
-                    "product_id": best_match["product_id"],
+                    "product_id": product_id,
                     "product_name": best_match["product_name"],
                     "detected_name": scanned_item.name,
                     "quantity": scanned_item.quantity,
@@ -341,11 +344,18 @@ class ReceiptProcessingService:
     def _create_product_from_scan(self, scanned_item) -> dict:
         """
         Create a new product from scanned receipt item
+        Only uses categories from database - does not create new ones
         """
-        # Find or create category
+        # Find category from database only (no creation)
         category_id = None
         if scanned_item.category:
-            category_id = self._get_or_create_category(scanned_item.category)
+            category_id = self._get_category_from_db(scanned_item.category)
+            if category_id:
+                print(f"[+] Category for '{scanned_item.name}': {scanned_item.category} (ID: {category_id})")
+            else:
+                print(f"[!] Category '{scanned_item.category}' not found in database for '{scanned_item.name}'")
+        else:
+            print(f"[!] No category provided for '{scanned_item.name}'")
         
         # Create product using schema
         product_create = ProductCreate(
@@ -357,23 +367,23 @@ class ReceiptProcessingService:
         
         return self.product_service.create_product(product_create)
     
-    def _get_or_create_category(self, category_name: str) -> Optional[str]:
+    def _get_category_from_db(self, category_name: str) -> Optional[str]:
         """
-        Get existing category or create new one
+        Get existing category from database only - does not create new ones
+        Returns category_id if found, None otherwise
         """
         try:
-            # Try to find existing category (case-insensitive)
+            # Get all categories from database
             categories = self.product_service.get_categories()
             for cat in categories:
                 if cat["category_name"].lower() == category_name.lower():
                     return cat["category_id"]
             
-            # Create new category using schema
-            category_create = ProductCategoryCreate(category_name=category_name)
-            new_category = self.product_service.create_category(category_create)
-            return new_category["category_id"]
+            # Category not found in database
+            print(f"[!] Category '{category_name}' not found in database")
+            return None
         except Exception as e:
-            print(f"[!] Error creating category: {e}")
+            print(f"[!] Error getting category from database: {e}")
             return None
     
     def _calculate_average_confidence(self, scan_result: ReceiptScanResult) -> float:
