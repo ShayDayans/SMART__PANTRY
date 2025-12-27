@@ -84,12 +84,11 @@ class HabitInputResponse(BaseModel):
 class ChatMessage(BaseModel):
     """Schema for chat message"""
     message: str
-    user_id: str
 
 
 class ChatResponse(BaseModel):
     """Schema for chat response"""
     response: str
     extracted_data: Optional[Dict[str, Any]] = None
-    suggested_habits: Optional[List[Dict[str, Any]]] = None
+    suggested_habits: Optional[List[str]] = None
 

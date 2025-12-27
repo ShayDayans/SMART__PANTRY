@@ -97,8 +97,8 @@ export default function ShoppingActivePage() {
     try {
       setLoadingItems(true)
       const response = await api.get(`/shopping-lists/${listId}/items`)
-      // Add default duration days to each item and restore feedback state
-      const itemsWithDuration = response.data.map((item: ShoppingItem) => {
+      // Restore feedback state from loaded items
+      const itemsWithState = response.data.map((item: ShoppingItem) => {
         // Restore feedback state from loaded item
         if (item.sufficiency_marked !== undefined) {
           setSufficiencyMarked(prev => ({ ...prev, [item.shopping_list_item_id]: item.sufficiency_marked! }))
@@ -109,12 +109,9 @@ export default function ShoppingActivePage() {
         if (item.qty_feedback) {
           setQtyFeedback(prev => ({ ...prev, [item.shopping_list_item_id]: item.qty_feedback! }))
         }
-        return {
-          ...item,
-          durationDays: shoppingFrequency,
-        }
+        return item
       })
-      setItems(itemsWithDuration)
+      setItems(itemsWithState)
     } catch (error) {
       console.error('Error loading items:', error)
     } finally {
@@ -179,19 +176,33 @@ export default function ShoppingActivePage() {
     }
   }
 
-  const adjustDuration = (itemId: string, increase: boolean) => {
-    setItems((prevItems) =>
-      prevItems.map((item) => {
-        if (item.shopping_list_item_id === itemId) {
-          const currentDuration = item.durationDays || shoppingFrequency
-          const newDuration = increase
-            ? currentDuration + 3
-            : Math.max(1, currentDuration - 3)
-          return { ...item, durationDays: newDuration }
-        }
-        return item
+  const adjustDuration = async (itemId: string, productId: string | null, increase: boolean) => {
+    if (!productId) {
+      // If no product_id, can't update days_left
+      return
+    }
+    
+    try {
+      // Update days_left through feedback API (similar to MORE/LESS)
+      const feedback = increase ? 'MORE' : 'LESS'
+      
+      // First update the shopping list item
+      await api.put(`/shopping-lists/items/${itemId}`, {
+        qty_feedback: feedback,
       })
-    )
+      
+      // Then update the model
+      await api.post(`/predictor/learn-from-shopping-feedback`, {
+        shopping_list_item_id: itemId,
+        product_id: productId,
+        feedback: feedback
+      })
+      
+      // Reload items to get updated prediction
+      await loadItems()
+    } catch (error) {
+      console.error('Error adjusting days_left:', error)
+    }
   }
 
   const addNewItem = async () => {
@@ -475,27 +486,27 @@ export default function ShoppingActivePage() {
                             </div>
                           )}
 
-                          {/* Duration Indicator */}
-                          {item.status === 'BOUGHT' && (
+                          {/* Days Left Indicator (for items with product_id and prediction) */}
+                          {item.status === 'BOUGHT' && item.product_id && item.prediction?.predicted_days_left !== undefined && (
                             <div className="flex items-center gap-3 mt-3 p-3 bg-blue-50 rounded-lg">
                               <Clock className="h-5 w-5 text-blue-600" />
                               <div className="flex-1">
                                 <p className="text-sm font-medium text-gray-700">
-                                  Will last for: {item.durationDays || shoppingFrequency} days
+                                  Estimated days left: {Math.round(item.prediction.predicted_days_left * 10) / 10} days
                                 </p>
                               </div>
                               <div className="flex gap-2">
                                 <button
-                                  onClick={() => adjustDuration(item.shopping_list_item_id, false)}
+                                  onClick={() => adjustDuration(item.shopping_list_item_id, item.product_id, false)}
                                   className="p-1 rounded-lg bg-orange-100 hover:bg-orange-200 text-orange-600"
-                                  title="Less time"
+                                  title="Decrease days left"
                                 >
                                   <ChevronDown className="h-5 w-5" />
                                 </button>
                                 <button
-                                  onClick={() => adjustDuration(item.shopping_list_item_id, true)}
+                                  onClick={() => adjustDuration(item.shopping_list_item_id, item.product_id, true)}
                                   className="p-1 rounded-lg bg-green-100 hover:bg-green-200 text-green-600"
-                                  title="More time"
+                                  title="Increase days left"
                                 >
                                   <ChevronUp className="h-5 w-5" />
                                 </button>

@@ -169,11 +169,15 @@ def learn_from_shopping_feedback(
             if is_empty:
                 # Special handling for EMPTY products
                 if feedback_kind == "MORE":
-                    # If EMPTY and MORE: increase by 15% of cycle_mean_days (moderate increase)
+                    # If EMPTY and MORE: increase moderately by 0.15 * cycle_mean_days
                     # This means the user is indicating they have the product again
-                    base_days = state.cycle_mean_days if state.cycle_mean_days > 0 else 7.0  # Fallback to 7 days
-                    new_days_left = base_days * 1.15  # 15% more than the mean
-                    print(f"[EMPTY->MORE] Starting new cycle for product {product_id}: days_left = {new_days_left} (15% more than mean {base_days})")
+                    if state.cycle_mean_days > 0:
+                        # Moderate increase: 15% of the mean (not 115%!)
+                        new_days_left = state.cycle_mean_days * 0.15
+                    else:
+                        # If no cycle_mean_days yet, start with a small value (1-2 days)
+                        new_days_left = 1.5
+                    print(f"[EMPTY->MORE] Moderate increase for product {product_id}: days_left = {new_days_left} (from cycle_mean_days = {state.cycle_mean_days})")
                 else:  # LESS
                     # If EMPTY and LESS: stay at 0 (or very small value)
                     new_days_left = 0.0

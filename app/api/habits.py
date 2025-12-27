@@ -130,57 +130,98 @@ def get_habit_inputs(
 def chat_with_llm(
     message: ChatMessage,
     user_id: UUID = Depends(get_current_user_id),
-    service: HabitService = Depends(get_habit_service)
+    service: HabitService = Depends(get_habit_service),
+    supabase: Client = Depends(get_supabase)
 ):
     """
-    Chat with LLM to parse user input and extract habit information.
-    This endpoint simulates LLM parsing - in production, integrate with actual LLM API.
+    Chat with GPT to parse user input and extract habit information.
+    Also provides insights to update the predictor model.
     """
-    # TODO: Integrate with actual LLM (OpenAI, Anthropic, etc.)
-    # For now, return a mock response
+    from app.core.config import settings
+    from app.services.habit_chat_service import HabitChatService
+    from app.models.enums import HabitInputSource, HabitType, HabitStatus
+    from app.services.predictor_service import PredictorService
+    from app.services.inventory_service import InventoryService
+    from datetime import datetime, timezone
     
-    import re
-    from app.models.enums import HabitInputSource
+    # Initialize GPT service
+    openai_api_key = settings.openai_api_key
+    if not openai_api_key:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="OpenAI API key is not configured. Please set OPENAI_API_KEY in your .env file."
+        )
     
-    user_text = message.message.lower()
-    extracted_data = {}
-    suggested_habits = []
+    chat_service = HabitChatService(openai_api_key)
     
-    # Simple keyword-based parsing (replace with actual LLM)
-    if "אנשים" in user_text or "בית" in user_text:
-        # Try to extract number
-        numbers = re.findall(r'\d+', user_text)
-        if numbers:
-            extracted_data["household_size"] = int(numbers[0])
+    # Get conversation history
+    try:
+        previous_inputs = service.get_habit_inputs(str(user_id))
+        conversation_history = []
+        for inp in previous_inputs[-10:]:  # Last 10 messages
+            if inp.get("raw_text"):
+                conversation_history.append({"role": "user", "content": inp["raw_text"]})
+            if inp.get("extracted_json"):
+                # Add assistant response based on extracted data
+                conversation_history.append({
+                    "role": "assistant",
+                    "content": f"I've updated your preferences based on: {inp.get('raw_text', '')}"
+                })
+    except Exception as e:
+        conversation_history = []
     
-    if "קניות" in user_text:
-        if "ראשון" in user_text:
-            extracted_data["preferred_shopping_day"] = "ראשון"
-        elif "שני" in user_text:
-            extracted_data["preferred_shopping_day"] = "שני"
-        elif "שלישי" in user_text:
-            extracted_data["preferred_shopping_day"] = "שלישי"
-        elif "רביעי" in user_text:
-            extracted_data["preferred_shopping_day"] = "רביעי"
-        elif "חמישי" in user_text:
-            extracted_data["preferred_shopping_day"] = "חמישי"
-        elif "שישי" in user_text:
-            extracted_data["preferred_shopping_day"] = "שישי"
-        elif "שבת" in user_text:
-            extracted_data["preferred_shopping_day"] = "שבת"
+    # Get current user preferences
+    try:
+        user_preferences = service.get_user_preferences(str(user_id))
+    except Exception:
+        user_preferences = {}
     
-    if "צמחונות" in user_text or "צמחוני" in user_text:
-        extracted_data.setdefault("dietary_preferences", []).append("צמחונות")
-    if "טבעונות" in user_text or "טבעוני" in user_text:
-        extracted_data.setdefault("dietary_preferences", []).append("טבעונות")
-    if "כשר" in user_text:
-        extracted_data.setdefault("dietary_preferences", []).append("כשר")
+    # Get inventory summary for context
+    try:
+        inventory_service = InventoryService(supabase)
+        inventory = inventory_service.get_inventory(user_id)
+        inventory_summary = {
+            "total_items": len(inventory),
+            "categories": list(set([
+                item.get("products", {}).get("category_name", "Unknown")
+                if isinstance(item.get("products"), dict)
+                else "Unknown"
+                for item in inventory
+            ]))
+        }
+    except Exception:
+        inventory_summary = {}
     
-    # Save the chat input
+    # Call GPT
+    try:
+        gpt_response = chat_service.chat_with_user(
+            user_message=message.message,
+            conversation_history=conversation_history,
+            user_preferences=user_preferences,
+            user_inventory_summary=inventory_summary
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get response from GPT: {str(e)}"
+        )
+    
+    extracted_data = gpt_response.get("extracted_data", {})
+    consumption_patterns = gpt_response.get("consumption_patterns", [])
+    model_insights = gpt_response.get("model_insights", {})
+    suggested_habits = gpt_response.get("suggested_habits", [])
+    
+    # Save the chat input with full GPT response
+    full_extracted_data = {
+        "extracted_data": extracted_data,
+        "consumption_patterns": consumption_patterns,
+        "model_insights": model_insights
+    }
+    
     habit_input = HabitInputCreate(
         source=HabitInputSource.CHAT,
         raw_text=message.message,
-        extracted_json=extracted_data if extracted_data else None
+        extracted_json=full_extracted_data if full_extracted_data else None
     )
     
     try:
@@ -188,14 +229,62 @@ def chat_with_llm(
     except Exception as e:
         pass  # Log error but don't fail the request
     
-    # Generate response
-    response_text = "תודה על המידע! עדכנתי את ההעדפות שלך."
-    if extracted_data:
-        response_text += " זיהיתי: " + ", ".join([f"{k}: {v}" for k, v in extracted_data.items()])
+    # Create suggested habits if any
+    created_habits = []
+    for suggested_habit in suggested_habits:
+        try:
+            habit_create = HabitCreate(
+                type=HabitType(suggested_habit.get("type", "OTHER")),
+                status=HabitStatus.ACTIVE,
+                explanation=suggested_habit.get("description", ""),
+                effects=suggested_habit.get("effects", {}),
+                params={}
+            )
+            created_habit = service.create_habit(str(user_id), habit_create)
+            created_habits.append(created_habit)
+        except Exception as e:
+            pass  # Log error but don't fail
+    
+    # Apply model insights to update predictor (if any)
+    predictor_service = PredictorService(supabase)
+    try:
+        if model_insights.get("suggested_adjustments"):
+            for adjustment in model_insights["suggested_adjustments"]:
+                product_name = adjustment.get("product_name")
+                suggested_multiplier = adjustment.get("suggested_multiplier")
+                
+                if product_name and suggested_multiplier:
+                    # Find product by name
+                    products_result = supabase.table("products").select("product_id").ilike(
+                        "product_name", f"%{product_name}%"
+                    ).limit(1).execute()
+                    
+                    if products_result.data:
+                        product_id = products_result.data[0]["product_id"]
+                        # Update habit multiplier for this product
+                        # This will be applied through get_active_habit_multiplier
+                        # For now, we create a habit with product-specific multiplier
+                        habit_create = HabitCreate(
+                            type=HabitType.OTHER,
+                            status=HabitStatus.ACTIVE,
+                            explanation=f"AI-suggested adjustment for {product_name}: {adjustment.get('reason', '')}",
+                            effects={
+                                "product_multipliers": {
+                                    str(product_id): suggested_multiplier
+                                }
+                            },
+                            params={}
+                        )
+                        try:
+                            service.create_habit(str(user_id), habit_create)
+                        except Exception:
+                            pass
+    except Exception as e:
+        pass  # Log error but don't fail
     
     return ChatResponse(
-        response=response_text,
+        response=gpt_response.get("response", "I've updated your preferences."),
         extracted_data=extracted_data if extracted_data else None,
-        suggested_habits=suggested_habits
+        suggested_habits=[h.get("habit_id") for h in created_habits] if created_habits else []
     )
 
