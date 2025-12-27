@@ -17,6 +17,7 @@ class InventorySource(str, Enum):
     SHOPPING_LIST = "SHOPPING_LIST"
     MANUAL = "MANUAL"
     SYSTEM = "SYSTEM"
+    RECIPE = "RECIPE"
 
 
 class InventoryAction(str, Enum):

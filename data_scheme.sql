@@ -16,7 +16,12 @@ do $$ begin
 exception when duplicate_object then null; end $$;
 
 do $$ begin
-  create type inventory_source as enum ('RECEIPT','SHOPPING_LIST','MANUAL','SYSTEM');
+  create type inventory_source as enum ('RECEIPT','SHOPPING_LIST','MANUAL','SYSTEM','RECIPE');
+exception when duplicate_object then null; end $$;
+
+-- Add RECIPE to existing enum if it doesn't exist
+do $$ begin
+  alter type inventory_source add value if not exists 'RECIPE';
 exception when duplicate_object then null; end $$;
 
 do $$ begin
@@ -315,3 +320,22 @@ create index if not exists idx_product_predictor_state_profile
 
 create index if not exists idx_inventory_forecasts_user_product_time
   on inventory_forecasts(user_id, product_id, generated_at desc);
+
+-- -------------------------
+-- Shopping feedback log (for tracking user feedback on predictions)
+-- -------------------------
+create table if not exists shopping_feedback_log (
+  feedback_id              uuid primary key default gen_random_uuid(),
+  shopping_list_item_id   uuid references shopping_list_items(shopping_list_item_id) on delete set null,
+  product_id               uuid not null references products(product_id) on delete cascade,
+  user_id                  uuid not null references users(user_id) on delete cascade,
+  feedback_type            text not null check (feedback_type in ('MORE', 'LESS')),
+  predicted_days_before    numeric,
+  predicted_days_after     numeric,
+  cycle_mean_days_before   numeric,
+  cycle_mean_days_after    numeric,
+  created_at               timestamptz not null default now()
+);
+
+create index if not exists idx_shopping_feedback_log_user_product
+  on shopping_feedback_log(user_id, product_id, created_at desc);

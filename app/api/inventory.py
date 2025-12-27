@@ -1,6 +1,7 @@
 """
 Inventory API routes
 """
+import logging
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks, Query
 from typing import List, Optional
 from uuid import UUID
@@ -8,6 +9,8 @@ from supabase import Client
 
 from app.db.supabase_client import get_supabase
 from app.core.dependencies import get_current_user_id
+
+logger = logging.getLogger(__name__)
 from app.services.inventory_service import InventoryService
 from app.services.predictor_service import PredictorService
 from app.schemas.inventory import (
@@ -94,16 +97,10 @@ def update_inventory(
     if not item:
         raise HTTPException(status_code=404, detail="Inventory item not found")
     
-    # ALWAYS trigger predictor to learn from the change (but don't overwrite manual changes)
-    if inventory.state is not None:
-      try:
-        background_tasks.add_task(
-          predictor_service.learn_from_manual_change,
-          user_id=str(user_id),
-          product_id=str(product_id)
-        )
-      except Exception as e:
-        print(f"Error scheduling predictor update: {e}")
+    # NOTE: We do NOT trigger predictor update here anymore.
+    # The model should only learn from real events (EMPTY, PURCHASE, MORE/LESS, WASTED),
+    # not from manual inventory state changes.
+    # Manual state changes are just UI updates, not consumption events.
     
     return item
 
@@ -202,17 +199,108 @@ def provide_feedback(
             detail="Service temporarily unavailable. Please try again in a moment."
         )
     
-    # Trigger predictor to process this log entry
-    if log_entry:
-        try:
-            background_tasks.add_task(
-                predictor_service.process_inventory_log,
-                log_id=str(log_entry.get("log_id"))
-            )
-        except Exception as e:
-            print(f"Error scheduling predictor update: {e}")
+    # Update days_left immediately (but NOT cycle_mean_days)
+    # cycle_mean_days will be updated only during weekly update based on observed cycle length
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
     
-    return {"message": "Model updated", "log_id": log_entry.get("log_id") if log_entry else None}
+    try:
+        # Get current state to calculate new days_left
+        predictor_profile_id, cfg = predictor_service._load_cfg_and_profile(str(user_id))
+        products = dict(predictor_service.repo.get_user_inventory_products(str(user_id)))
+        category_id = products.get(str(product_id))
+        state = predictor_service._load_or_init_state(
+            str(user_id), str(product_id), predictor_profile_id, cfg, category_id, now
+        )
+        
+        # Get current days_left from inventory (if user has updated it)
+        current_item = service.get_inventory_item(user_id, product_id)
+        inventory_days_left = current_item.get("estimated_qty") if current_item else None
+        if inventory_days_left is not None:
+            try:
+                inventory_days_left = float(inventory_days_left)
+            except (ValueError, TypeError):
+                inventory_days_left = None
+        
+        from ema_cycle_predictor import compute_days_left, predict, derive_state
+        mult = predictor_service.repo.get_active_habit_multiplier(str(user_id), str(product_id), category_id, now)
+        # Use inventory_days_left if available, otherwise calculate from cycle_mean_days
+        current_days_left = compute_days_left(state, now, mult, cfg, inventory_days_left=inventory_days_left)
+        
+        # Check if product is EMPTY (days_left = 0 or very close to 0)
+        is_empty = current_days_left <= 0.01 or (current_item and current_item.get("state") == "EMPTY")
+        
+        # Apply percentage multiplier to days_left based on direction
+        if is_empty:
+            # Special handling for EMPTY products
+            if direction.lower() == "more":
+                # If EMPTY and MORE: increase by 15% of cycle_mean_days (moderate increase)
+                # This means the user is indicating they have the product again
+                base_days = state.cycle_mean_days if state.cycle_mean_days > 0 else 7.0  # Fallback to 7 days
+                new_days_left = base_days * 1.15  # 15% more than the mean
+                logger.info(f"[EMPTY->MORE] Starting new cycle for product {product_id}: days_left = {new_days_left} (15% more than mean {base_days})")
+            else:  # less
+                # If EMPTY and LESS: stay at 0 (or very small value)
+                new_days_left = 0.0
+                logger.info(f"[EMPTY->LESS] Product {product_id} stays EMPTY")
+        else:
+            # Normal case: product has days_left > 0
+            if direction.lower() == "more":
+                multiplier = 1.15  # 15% more days
+            else:  # less
+                multiplier = 0.85  # 15% less days
+            
+            new_days_left = current_days_left * multiplier
+            new_days_left = max(0.0, new_days_left)  # Can't be negative
+        
+        # Calculate new state based on new days_left
+        new_state = derive_state(new_days_left, state.cycle_mean_days, cfg)
+        
+        # Update state.last_pred_days_left to reflect the new prediction
+        state.last_pred_days_left = float(new_days_left)
+        state.last_update_at = now
+        
+        # Calculate confidence
+        from ema_cycle_predictor import compute_confidence
+        confidence = compute_confidence(state, now, cfg)
+        
+        # Update product_predictor_state with updated state
+        params_json = state.to_params_json()
+        params_json = predictor_service._make_json_serializable(params_json)
+        predictor_service.repo.upsert_predictor_state(
+            user_id=str(user_id),
+            product_id=str(product_id),
+            predictor_profile_id=predictor_profile_id,
+            params=params_json,
+            confidence=confidence,
+            updated_at=now,
+        )
+        
+        # Update inventory with new days_left (but keep cycle_mean_days unchanged)
+        print(f"[DEBUG provide_feedback] Updating inventory: user_id={user_id}, product_id={product_id}, new_days_left={new_days_left}, new_state={new_state.value}, confidence={confidence}")
+        try:
+            predictor_service.repo.upsert_inventory_days_estimate(
+                user_id=str(user_id),
+                product_id=str(product_id),
+                days_left=new_days_left,
+                state=InventoryState(new_state.value),
+                confidence=confidence,
+                source=InventorySource.MANUAL,
+            )
+            print(f"[DEBUG provide_feedback] Successfully updated inventory")
+        except Exception as e:
+            print(f"[ERROR provide_feedback] Failed to update inventory: {e}")
+            import traceback
+            traceback.print_exc()
+        
+    except Exception as e:
+        print(f"Warning: Could not update days_left: {e}")
+    
+    return {
+        "message": f"Days left updated: {direction} feedback applied (cycle_mean_days unchanged until weekly update)",
+        "log_id": log_entry.get("log_id") if log_entry else None,
+        "note": "cycle_mean_days will be updated during weekly update based on observed cycle length"
+    }
 
 
 @router.get("/log", response_model=List[InventoryLogResponse])

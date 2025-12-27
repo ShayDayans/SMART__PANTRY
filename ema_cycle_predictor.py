@@ -56,7 +56,7 @@ class PredictorConfig:
     category_priors: Dict[str, CategoryPrior]
 
     # EMA weights
-    alpha_strong: float = 0.25    # for EMPTY / observed cycles
+    alpha_strong: float = 0.12    # for EMPTY / observed cycles (reduced from 0.25 to be less sensitive)
     alpha_weak: float = 0.10      # for MORE/LESS
     alpha_confirm: float = 0.05   # for EXACT
 
@@ -127,6 +127,7 @@ class CycleEmaState:
 
     n_strong_updates: int = 0
     n_total_updates: int = 0
+    n_completed_cycles: int = 0  # Number of completed cycles (for cumulative average calculation)
 
     last_pred_days_left: Optional[float] = None
     censored_cycles: int = 0
@@ -134,6 +135,7 @@ class CycleEmaState:
 
     # Optional for convenience
     category_id: Optional[str] = None
+    last_feedback_at: Optional[datetime] = None  # Track last MORE/LESS feedback for adaptive learning
 
     def to_params_json(self) -> Dict[str, Any]:
         d = asdict(self)
@@ -152,7 +154,24 @@ class CycleEmaState:
                 return x
             if isinstance(x, str) and x.strip():
                 # expects ISO string; timezone recommended
-                return datetime.fromisoformat(x.replace("Z", "+00:00"))
+                try:
+                    # Fix microsecond precision if needed
+                    x_str = x.replace("Z", "+00:00")
+                    import re
+                    match = re.search(r'\.(\d{1,6})([+-]\d{2}:\d{2})$', x_str)
+                    if match:
+                        microseconds = match.group(1)
+                        timezone_part = match.group(2)
+                        if len(microseconds) < 6:
+                            microseconds = microseconds.ljust(6, '0')
+                        x_str = re.sub(r'\.\d{1,6}([+-]\d{2}:\d{2})$', f'.{microseconds}\\1', x_str)
+                    return datetime.fromisoformat(x_str)
+                except (ValueError, AttributeError):
+                    try:
+                        from dateutil import parser
+                        return parser.isoparse(x)
+                    except (ImportError, ValueError):
+                        return None
             return None
 
         return CycleEmaState(
@@ -163,10 +182,12 @@ class CycleEmaState:
             last_update_at=parse_dt(params.get("last_update_at")) or datetime.now(timezone.utc),
             n_strong_updates=int(params.get("n_strong_updates", 0)),
             n_total_updates=int(params.get("n_total_updates", 0)),
+            n_completed_cycles=int(params.get("n_completed_cycles", 0)),  # NEW: Add n_completed_cycles
             last_pred_days_left=(None if params.get("last_pred_days_left") is None else float(params["last_pred_days_left"])),
             censored_cycles=int(params.get("censored_cycles", 0)),
             waste_events=int(params.get("waste_events", 0)),
             category_id=(None if params.get("category_id") is None else str(params["category_id"])),
+            last_feedback_at=parse_dt(params.get("last_feedback_at")),  # Track last MORE/LESS feedback
         )
 
 
@@ -209,6 +230,9 @@ def derive_state(days_left: float, mean_days: float, cfg: PredictorConfig) -> In
         return InventoryState.EMPTY
     denom = max(mean_days, 1e-6)
     ratio = days_left / denom
+    # If ratio is very small (< 2%), consider it EMPTY
+    if ratio < 0.02:
+        return InventoryState.EMPTY
     if ratio >= cfg.full_ratio:
         return InventoryState.FULL
     if ratio >= cfg.medium_ratio:
@@ -217,26 +241,49 @@ def derive_state(days_left: float, mean_days: float, cfg: PredictorConfig) -> In
 
 
 def compute_confidence(state: CycleEmaState, now: datetime, cfg: PredictorConfig) -> float:
-    # evidence: relies mostly on strong updates ("EMPTY"/cycle observations)
-    evidence = _sigmoid(state.n_strong_updates / 3.0)
+    # evidence: relies on completed cycles (more reliable than just strong updates)
+    # Use n_completed_cycles if available and > 0, otherwise fall back to n_strong_updates
+    cycles_for_evidence = state.n_completed_cycles if state.n_completed_cycles > 0 else state.n_strong_updates
+    # Normalize: sigmoid(cycles / 2.0) means ~0.88 at 2 cycles, ~0.98 at 4 cycles
+    evidence = _sigmoid(cycles_for_evidence / 2.0)
+    
+    # For products with no cycles yet, give minimum evidence of 0.3 (not 0.5)
+    if cycles_for_evidence == 0:
+        evidence = 0.3  # Fixed minimum for new products
 
-    # stability: penalize large mad relative to mean
+    # stability: penalize large mad relative to mean, but don't let it go below 0.2
     stability = 1.0 - (state.cycle_mad_days / max(state.cycle_mean_days, 1.0))
-    stability = _clamp(stability, 0.0, 1.0)
+    stability = _clamp(stability, 0.2, 1.0)  # Minimum stability of 0.2
 
-    # recency: exponential decay
+    # recency: exponential decay, but slower (tau increased to 60 days)
     days_since = _days_between(now, state.last_update_at)
     recency = math.exp(-days_since / max(cfg.recency_tau_days, 1e-6))
+    
+    # Minimum recency: even if many days passed, don't let it go below 0.1
+    recency = max(0.1, recency)
 
-    conf = 0.1 + 0.9 * evidence * stability * recency
+    # Base confidence: 0.2 (increased from 0.1) + 0.8 * components
+    conf = 0.2 + 0.8 * evidence * stability * recency
     return float(_clamp(conf, 0.0, 1.0))
 
 
-def compute_days_left(state: CycleEmaState, now: datetime, multiplier: float, cfg: PredictorConfig) -> float:
+def compute_days_left(state: CycleEmaState, now: datetime, multiplier: float, cfg: PredictorConfig, inventory_days_left: Optional[float] = None) -> float:
     """
+    Compute days left for a product.
+    
+    If inventory_days_left is provided (from user updates), use it directly.
+    Otherwise, calculate from cycle_mean_days and elapsed time.
+    
     multiplier > 1 means faster consumption => fewer days left.
     This is applied at prediction time only (habits temporary modifiers).
     """
+    # If user has updated days_left directly (via MORE/LESS, recipe, etc.), use that value
+    if inventory_days_left is not None:
+        mult = max(multiplier, 1e-6)
+        adjusted = inventory_days_left / mult
+        return float(max(adjusted, 0.0))
+    
+    # Otherwise, calculate from cycle_mean_days
     if state.cycle_started_at is None:
         return 0.0
 
@@ -269,10 +316,12 @@ def init_state_from_category(category_id: Optional[str], cfg: PredictorConfig, n
         last_update_at=now,
         n_strong_updates=0,
         n_total_updates=0,
+        n_completed_cycles=0,  # Initialize n_completed_cycles
         last_pred_days_left=None,
         censored_cycles=0,
         waste_events=0,
         category_id=(str(category_id) if category_id is not None else None),
+        last_feedback_at=None,  # Initialize last_feedback_at
     )
 
 
@@ -292,6 +341,7 @@ class FeedbackEvent:
     kind: FeedbackKind
     source: InventorySource = InventorySource.MANUAL
     reliability: float = 0.9
+    note: Optional[str] = None  # Store note for WASTED reason analysis
 
 
 def apply_purchase(state: CycleEmaState, ev: PurchaseEvent) -> CycleEmaState:
@@ -322,20 +372,33 @@ def apply_feedback(state: CycleEmaState, ev: FeedbackEvent, cfg: PredictorConfig
         observed = _clamp(observed, cfg.min_cycle_days, cfg.max_cycle_days)
 
         old_mean = state.cycle_mean_days
-        a = cfg.alpha_strong
-
-        # EMA update for mean
-        new_mean = (1 - a) * old_mean + a * observed
+        n_cycles = state.n_completed_cycles
+        
+        # Cumulative average: (old_mean * n_cycles + new_cycle) / (n_cycles + 1)
+        if n_cycles == 0:
+            # First cycle - use observed directly
+            new_mean = observed
+        else:
+            # Cumulative average formula
+            new_mean = (old_mean * n_cycles + observed) / (n_cycles + 1)
+        
         new_mean = _clamp(new_mean, cfg.min_cycle_days, cfg.max_cycle_days)
 
-        # Robust-ish error tracking via MAD
+        # Update MAD based on error (cumulative average of absolute errors)
         err = observed - old_mean
-        new_mad = (1 - a) * state.cycle_mad_days + a * abs(err)
+        if n_cycles == 0:
+            # First cycle - use absolute error directly
+            new_mad = abs(err) if abs(err) > 0 else 0.1
+        else:
+            # Cumulative average of absolute errors
+            # cycle_mad_days is the average of n_cycles, so sum = cycle_mad_days * n_cycles
+            current_mad_sum = state.cycle_mad_days * n_cycles
+            new_mad = (current_mad_sum + abs(err)) / (n_cycles + 1)
         new_mad = _clamp(new_mad, 0.1, cfg.max_cycle_days)
 
         state.cycle_mean_days = float(new_mean)
         state.cycle_mad_days = float(new_mad)
-
+        state.n_completed_cycles += 1  # Increment completed cycles count
         state.n_strong_updates += 1
 
         # no active cycle until next purchase
@@ -344,10 +407,41 @@ def apply_feedback(state: CycleEmaState, ev: FeedbackEvent, cfg: PredictorConfig
 
     if ev.kind == FeedbackKind.WASTED:
         state.waste_events += 1
-        # do not learn consumption; set empty/no active cycle
-        state.cycle_started_at = None
-        # slightly reduce stability
-        state.cycle_mad_days = _clamp(state.cycle_mad_days * 1.03, 0.1, cfg.max_cycle_days)
+        
+        # Check reason from note to determine if we should learn
+        reason = ""
+        if hasattr(ev, 'note') and ev.note:
+            reason = ev.note.lower()
+        elif hasattr(ev, 'source') and hasattr(ev.source, 'value'):
+            # Try to get note from event if available
+            pass
+        
+        # Parse reason from note if available (will be set in map_inventory_log_row_to_event)
+        if "taste" in reason or "expired" in reason or "לא היה טעים" in reason or "פג תוקף" in reason:
+            # Not a real consumption cycle - don't learn
+            state.cycle_started_at = None
+            state.cycle_mad_days = _clamp(state.cycle_mad_days * 1.03, 0.1, cfg.max_cycle_days)
+        elif "ran out" in reason or "נגמר" in reason or "empty" in reason:
+            # Might be a real cycle - learn weakly
+            if state.cycle_started_at is not None:
+                observed = _days_between(ev.ts, state.cycle_started_at)
+                observed = _clamp(observed, cfg.min_cycle_days, cfg.max_cycle_days)
+                # Very weak update (20% of alpha_strong)
+                a = cfg.alpha_strong * 0.2
+                old_mean = state.cycle_mean_days
+                new_mean = (1 - a) * old_mean + a * observed
+                new_mean = _clamp(new_mean, cfg.min_cycle_days, cfg.max_cycle_days)
+                state.cycle_mean_days = float(new_mean)
+                # Update MAD slightly
+                err = observed - old_mean
+                new_mad = (1 - a) * state.cycle_mad_days + a * abs(err) * 0.5
+                state.cycle_mad_days = float(_clamp(new_mad, 0.1, cfg.max_cycle_days))
+            state.cycle_started_at = None
+        else:
+            # Default: don't learn consumption
+            state.cycle_started_at = None
+            state.cycle_mad_days = _clamp(state.cycle_mad_days * 1.03, 0.1, cfg.max_cycle_days)
+        
         return state
 
     if ev.kind == FeedbackKind.EXACT:
@@ -355,24 +449,13 @@ def apply_feedback(state: CycleEmaState, ev: FeedbackEvent, cfg: PredictorConfig
         state.cycle_mad_days = _clamp((1 - a) * state.cycle_mad_days, 0.1, cfg.max_cycle_days)
         return state
 
-    # MORE / LESS
+    # MORE / LESS - DO NOT update cycle_mean_days!
+    # These feedbacks only affect days_left immediately (handled in API layer)
+    # cycle_mean_days will be updated during weekly update based on observed cycle length
     if ev.kind in (FeedbackKind.MORE, FeedbackKind.LESS):
-        a = cfg.alpha_weak
-        base = state.last_pred_days_left
-        if base is None or base <= 0:
-            # fallback: fixed small step
-            raw_delta = 1.0
-        else:
-            raw_delta = cfg.more_less_ratio * float(base)
-
-        delta = _clamp(raw_delta, 0.0, cfg.more_less_step_cap_days)
-
-        target_mean = state.cycle_mean_days + (delta if ev.kind == FeedbackKind.MORE else -delta)
-        target_mean = _clamp(target_mean, cfg.min_cycle_days, cfg.max_cycle_days)
-
-        # smooth towards target
-        state.cycle_mean_days = float((1 - a) * state.cycle_mean_days + a * target_mean)
-        state.cycle_mad_days = float(_clamp((1 - a) * state.cycle_mad_days + a * abs(delta), 0.1, cfg.max_cycle_days))
+        # Just track that feedback was given (for weekly processing)
+        # Don't update cycle_mean_days here
+        state.last_feedback_at = ev.ts
         return state
 
     return state
@@ -450,7 +533,40 @@ def map_inventory_log_row_to_event(row: Dict[str, Any]) -> Tuple[Optional[Purcha
     source = (row.get("source") or InventorySource.SYSTEM.value).upper()
     occurred_at = row.get("occurred_at")
     if isinstance(occurred_at, str):
-        occurred_at = datetime.fromisoformat(occurred_at.replace("Z", "+00:00"))
+        try:
+            # Try to parse ISO format string
+            # Handle different formats: "Z" suffix, "+00:00", or already has timezone
+            occurred_at_str = occurred_at.replace("Z", "+00:00")
+            
+            # Fix microsecond precision if needed (Supabase sometimes returns 5 digits instead of 6)
+            # Format: '2025-12-27T16:45:25.52139+00:00' -> '2025-12-27T16:45:25.521390+00:00'
+            import re
+            # Match pattern: .DDDDD+ or .DDDDD- (5 digits before timezone)
+            match = re.search(r'\.(\d{1,6})([+-]\d{2}:\d{2})$', occurred_at_str)
+            if match:
+                microseconds = match.group(1)
+                timezone_part = match.group(2)
+                # Pad to 6 digits if less than 6
+                if len(microseconds) < 6:
+                    microseconds = microseconds.ljust(6, '0')
+                # Replace in string
+                occurred_at_str = re.sub(r'\.\d{1,6}([+-]\d{2}:\d{2})$', f'.{microseconds}\\1', occurred_at_str)
+            
+            occurred_at = datetime.fromisoformat(occurred_at_str)
+        except (ValueError, AttributeError) as e:
+            # Fallback: try parsing with dateutil if available, or use current time
+            try:
+                from dateutil import parser
+                occurred_at = parser.isoparse(occurred_at)
+            except (ImportError, ValueError):
+                print(f"Warning: Could not parse occurred_at '{occurred_at}', using current time. Error: {e}")
+                occurred_at = _now_utc()
+    elif isinstance(occurred_at, datetime):
+        # Already a datetime object
+        pass
+    else:
+        occurred_at = None
+    
     if occurred_at is None:
         occurred_at = _now_utc()
     if occurred_at.tzinfo is None:
@@ -466,9 +582,10 @@ def map_inventory_log_row_to_event(row: Dict[str, Any]) -> Tuple[Optional[Purcha
         return PurchaseEvent(ts=occurred_at, source=src_enum), None
 
     # ADJUST might represent feedback; prioritize explicit note
-    fb = parse_feedback_from_note(row.get("note"))
+    note = row.get("note")
+    fb = parse_feedback_from_note(note)
     if fb is not None:
-        return None, FeedbackEvent(ts=occurred_at, kind=fb, source=src_enum)
+        return None, FeedbackEvent(ts=occurred_at, kind=fb, source=src_enum, note=note)
 
     # Fallback: delta_state EMPTY/FULL can be interpreted
     delta_state = (row.get("delta_state") or "").upper()

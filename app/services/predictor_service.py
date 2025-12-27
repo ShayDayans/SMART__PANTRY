@@ -108,7 +108,7 @@ class SupabasePantryRepository:
             
             default_config = {
                 "category_priors": category_priors,
-                "alpha_strong": 0.25,
+                "alpha_strong": 0.12,  # Reduced from 0.25 to be less sensitive to outliers
                 "alpha_weak": 0.10,
                 "alpha_confirm": 0.05,
                 "min_cycle_days": 1.0,
@@ -177,6 +177,11 @@ class SupabasePantryRepository:
         displayed_name: Optional[str] = None,
     ) -> None:
         """Update inventory with days estimate"""
+        # Check if inventory row exists first
+        existing = self.supabase.table("inventory").select("*").eq("user_id", user_id).eq("product_id", product_id).execute()
+        if not existing.data:
+            print(f"[WARNING upsert_inventory_days_estimate] Inventory row doesn't exist for user_id={user_id}, product_id={product_id}. Creating it...")
+        
         data = {
             "user_id": user_id,
             "product_id": product_id,
@@ -188,7 +193,20 @@ class SupabasePantryRepository:
         }
         if displayed_name:
             data["displayed_name"] = displayed_name
-        self.supabase.table("inventory").upsert(data, on_conflict="user_id,product_id").execute()
+        print(f"[DEBUG upsert_inventory_days_estimate] Upserting inventory: user_id={user_id}, product_id={product_id}, data={data}")
+        try:
+            result = self.supabase.table("inventory").upsert(data, on_conflict="user_id,product_id").execute()
+            print(f"[DEBUG upsert_inventory_days_estimate] Upsert result: {result.data if result.data else 'No data returned'}")
+            if result.data:
+                updated_row = result.data[0]
+                print(f"[DEBUG upsert_inventory_days_estimate] Updated row - estimated_qty={updated_row.get('estimated_qty')}, state={updated_row.get('state')}")
+            else:
+                print(f"[WARNING upsert_inventory_days_estimate] Upsert returned no data! This might indicate the row doesn't exist.")
+        except Exception as e:
+            print(f"[ERROR upsert_inventory_days_estimate] Failed to upsert inventory: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
     
     def insert_forecast(
         self,
@@ -547,4 +565,152 @@ class PredictorService:
                 source=InventorySource.SYSTEM,
             )
             self.repo.insert_forecast(user_id, product_id, fc, trigger_log_id=None)
+    
+    def weekly_model_update(self, user_id: str, product_id: str) -> None:
+        """
+        Weekly model update - only for products whose cycle should have ended.
+        Updates the model based on:
+        1. Completed cycles (EMPTY events) - strong update
+        2. Unchanged predictions (user didn't update = prediction was correct) - weak confirmation
+        3. Changed predictions (user updated = prediction was wrong) - learn from correction
+        """
+        if not PREDICTOR_AVAILABLE:
+            return
+        
+        now = datetime.now(timezone.utc)
+        predictor_profile_id, cfg = self._load_cfg_and_profile(user_id)
+        
+        products = dict(self.repo.get_user_inventory_products(user_id))
+        category_id = products.get(product_id)
+        
+        state = self._load_or_init_state(user_id, product_id, predictor_profile_id, cfg, category_id, now)
+        
+        # Check if there's an active cycle
+        if state.cycle_started_at is None:
+            # No active cycle - nothing to update
+            return
+        
+        # Calculate days since purchase
+        from ema_cycle_predictor import _days_between
+        days_since_purchase = _days_between(now, state.cycle_started_at)
+        
+        # Condition: only update if days_since_purchase >= cycle_mean_days
+        # (the cycle should have ended by now)
+        if days_since_purchase < state.cycle_mean_days:
+            # Cycle hasn't ended yet - don't update
+            return
+        
+        # Calculate observed cycle length: how many days the product actually lasted
+        # This is the time from cycle_started_at to when the cycle ended (EMPTY or new PURCHASE)
+        observed = None
+        cycle_end_time = None
+        
+        # 1. Check for EMPTY events since cycle_started_at
+        empty_logs = self.repo.supabase.table("inventory_log").select("*").eq(
+            "user_id", user_id
+        ).eq("product_id", product_id).eq("action", "EMPTY").gte(
+            "occurred_at", state.cycle_started_at.isoformat()
+        ).order("occurred_at", desc=False).limit(1).execute()
+        
+        if empty_logs.data:
+            # EMPTY event found - cycle ended when product ran out
+            cycle_end_time_str = empty_logs.data[0].get("occurred_at")
+            if cycle_end_time_str:
+                from datetime import datetime
+                cycle_end_time = datetime.fromisoformat(cycle_end_time_str.replace("Z", "+00:00"))
+                from ema_cycle_predictor import _days_between
+                observed = _days_between(cycle_end_time, state.cycle_started_at)
+        
+        # 2. If no EMPTY, check for PURCHASE events (new cycle started = previous cycle ended)
+        if observed is None:
+            purchase_logs = self.repo.supabase.table("inventory_log").select("*").eq(
+                "user_id", user_id
+            ).eq("product_id", product_id).in_("action", ["PURCHASE", "REPURCHASE"]).gte(
+                "occurred_at", state.cycle_started_at.isoformat()
+            ).order("occurred_at", desc=False).limit(1).execute()
+            
+            if purchase_logs.data:
+                # New cycle started - the previous cycle ended when this purchase happened
+                cycle_end_time_str = purchase_logs.data[0].get("occurred_at")
+                if cycle_end_time_str:
+                    from datetime import datetime
+                    cycle_end_time = datetime.fromisoformat(cycle_end_time_str.replace("Z", "+00:00"))
+                    from ema_cycle_predictor import _days_between
+                    observed = _days_between(cycle_end_time, state.cycle_started_at)
+        
+        # 3. If still no observed, use current time (cycle is still ongoing, but we're updating weekly)
+        if observed is None:
+            from ema_cycle_predictor import _days_between
+            observed = _days_between(now, state.cycle_started_at)
+        
+        # Clamp observed to valid range
+        observed = max(cfg.min_cycle_days, min(observed, cfg.max_cycle_days))
+        
+        # Update cycle_mean_days based on observed cycle length (EMA update)
+        old_mean = state.cycle_mean_days
+        
+        # Adaptive alpha based on history
+        if state.n_strong_updates >= 5:
+            a = cfg.alpha_strong * 0.7  # 30% less
+        elif state.n_strong_updates >= 3:
+            a = cfg.alpha_strong * 0.85  # 15% less
+        else:
+            a = cfg.alpha_strong
+        
+        # EMA update for mean
+        new_mean = (1 - a) * old_mean + a * observed
+        new_mean = max(cfg.min_cycle_days, min(new_mean, cfg.max_cycle_days))
+        
+        # Update MAD
+        err = observed - old_mean
+        new_mad = (1 - a) * state.cycle_mad_days + a * abs(err)
+        new_mad = max(0.1, min(new_mad, cfg.max_cycle_days))
+        
+        state.cycle_mean_days = float(new_mean)
+        state.cycle_mad_days = float(new_mad)
+        state.n_strong_updates += 1
+        
+        # Generate new forecast
+        mult = self.repo.get_active_habit_multiplier(user_id, product_id, category_id, now)
+        fc = predict(state, now, mult, cfg)
+        state = stamp_last_prediction(state, fc)
+        
+        # Save updated state
+        params_json = state.to_params_json()
+        params_json = self._make_json_serializable(params_json)
+        
+        self.repo.upsert_predictor_state(
+            user_id=user_id,
+            product_id=product_id,
+            predictor_profile_id=predictor_profile_id,
+            params=params_json,
+            confidence=fc.confidence,
+            updated_at=now,
+        )
+        
+        # Update inventory
+        self.repo.upsert_inventory_days_estimate(
+            user_id=user_id,
+            product_id=product_id,
+            days_left=fc.expected_days_left,
+            state=InventoryState(fc.predicted_state.value),
+            confidence=fc.confidence,
+            source=InventorySource.SYSTEM,
+        )
+        
+        print(f"Weekly update: Product {product_id} - observed cycle: {observed} days, updated cycle_mean_days: {old_mean} -> {new_mean}")
+        return
+    
+    def weekly_model_update_all_products(self, user_id: str) -> None:
+        """
+        Run weekly update for all products of a user
+        """
+        products = self.repo.get_user_inventory_products(user_id)
+        for product_id, category_id in products:
+            try:
+                self.weekly_model_update(user_id, product_id)
+            except Exception as e:
+                print(f"Error in weekly update for product {product_id}: {e}")
+                import traceback
+                traceback.print_exc()
 

@@ -14,7 +14,8 @@ import {
   LogOut,
   ArrowRight,
   Menu,
-  X
+  X,
+  ChefHat
 } from 'lucide-react'
 import { useState } from 'react'
 
@@ -24,6 +25,7 @@ const navItems = [
   { href: '/dashboard/shopping', label: 'Shopping List', icon: ShoppingCart },
   { href: '/dashboard/shopping-active', label: 'Active Shopping', icon: ArrowRight },
   { href: '/dashboard/return-shopping', label: 'Return Shopping', icon: Receipt },
+  { href: '/dashboard/recipes', label: 'Recipes', icon: ChefHat },
   { href: '/dashboard/habits', label: 'Habits', icon: Settings },
   { href: '/dashboard/profitability', label: 'Analytics', icon: TrendingUp },
 ]
