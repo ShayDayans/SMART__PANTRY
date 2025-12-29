@@ -25,8 +25,9 @@ except Exception as e:
 
 async def run_daily_weekly_updates():
     """
-    Background task that runs daily and updates products based on their creation day.
-    Each product is updated on the same day of the week it was created (based on first inventory_log entry).
+    Background task that runs daily at 00:00 and updates cycle_mean_days for products
+    if a week has passed since their creation (based on first inventory_log entry).
+    Checks once per day (not every minute).
     """
     from app.services.predictor_service import PredictorService
     from app.db.supabase_client import get_supabase
@@ -52,8 +53,8 @@ async def run_daily_weekly_updates():
                 users_result = supabase.table("users").select("user_id").execute()
                 if not users_result.data:
                     logger.info("[WEEKLY UPDATE] No users found")
-                    # Sleep for 24 hours minus 1 minute
-                    await asyncio.sleep(24 * 60 * 60 - 60)
+                    # Sleep for 24 hours
+                    await asyncio.sleep(24 * 60 * 60)
                     continue
                 
                 updated_count = 0
@@ -90,7 +91,7 @@ async def run_daily_weekly_updates():
                                     created_at = datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
                                     created_weekday = created_at.weekday()
                                     
-                                    # Check if today is the same weekday as creation
+                                    # Check if today is the same weekday as creation (a week has passed)
                                     if current_weekday == created_weekday:
                                         logger.info(f"[WEEKLY UPDATE] Updating product {product_id} for user {user_id} (created on {['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'][created_weekday]})")
                                         service.weekly_model_update(str(user_id), str(product_id))
@@ -116,19 +117,80 @@ async def run_daily_weekly_updates():
                 
                 logger.info(f"[WEEKLY UPDATE] Completed: {updated_count} products updated, {skipped_count} products skipped")
                 
-                # Sleep for 24 hours minus 1 minute to avoid running multiple times
-                await asyncio.sleep(24 * 60 * 60 - 60)
+                # Sleep for 24 hours to avoid running multiple times
+                await asyncio.sleep(24 * 60 * 60)
             else:
-                # Not 00:00 yet, calculate seconds until next midnight
+                # Not 00:00 yet, calculate seconds until next midnight and sleep
                 seconds_until_midnight = (24 - current_hour) * 3600 - current_minute * 60 - now.second
-                # Sleep until 1 minute before midnight, then check every minute
-                if seconds_until_midnight > 60:
-                    await asyncio.sleep(seconds_until_midnight - 60)
-                else:
-                    await asyncio.sleep(60)
+                await asyncio.sleep(seconds_until_midnight)
                 
         except Exception as e:
             logger.error(f"[WEEKLY UPDATE] Error in daily weekly update task: {e}")
+            import traceback
+            traceback.print_exc()
+            # Sleep for 1 hour before retrying
+            await asyncio.sleep(3600)
+
+
+async def run_daily_state_updates():
+    """
+    Background task that runs daily at 00:00 and updates state for all products.
+    Decreases days_left by 1 for each product and updates state accordingly.
+    Also updates last_pred_days_left in product_predictor_state.
+    """
+    from app.services.predictor_service import PredictorService
+    from app.db.supabase_client import get_supabase
+    
+    # Wait 10 seconds after startup before first run (after weekly update)
+    await asyncio.sleep(10)
+    
+    while True:
+        try:
+            now = datetime.now(timezone.utc)
+            current_hour = now.hour
+            current_minute = now.minute
+            
+            # Run at 00:00 every day (after weekly update)
+            if current_hour == 0 and current_minute == 0:
+                logger.info("[DAILY STATE UPDATE] Running daily state update for all products")
+                
+                supabase = get_supabase()
+                service = PredictorService(supabase)
+                
+                # Get all users
+                users_result = supabase.table("users").select("user_id").execute()
+                if not users_result.data:
+                    logger.info("[DAILY STATE UPDATE] No users found")
+                    # Sleep for 24 hours
+                    await asyncio.sleep(24 * 60 * 60)
+                    continue
+                
+                total_updated = 0
+                
+                for user_row in users_result.data:
+                    user_id = user_row["user_id"]
+                    try:
+                        service.daily_state_update_all_products(str(user_id))
+                        # Count products for this user
+                        products = service.repo.get_user_inventory_products(str(user_id))
+                        total_updated += len(list(products))
+                    except Exception as e:
+                        logger.error(f"[DAILY STATE UPDATE] Error processing user {user_id}: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        continue
+                
+                logger.info(f"[DAILY STATE UPDATE] Completed: {total_updated} products updated across all users")
+                
+                # Sleep for 24 hours to avoid running multiple times
+                await asyncio.sleep(24 * 60 * 60)
+            else:
+                # Not 00:00 yet, calculate seconds until next midnight and sleep
+                seconds_until_midnight = (24 - current_hour) * 3600 - current_minute * 60 - now.second
+                await asyncio.sleep(seconds_until_midnight)
+                
+        except Exception as e:
+            logger.error(f"[DAILY STATE UPDATE] Error in daily state update task: {e}")
             import traceback
             traceback.print_exc()
             # Sleep for 1 hour before retrying
@@ -139,21 +201,27 @@ async def run_daily_weekly_updates():
 async def lifespan(app: FastAPI):
     """
     Lifespan context manager for FastAPI app.
-    Starts background task on startup and stops it on shutdown.
+    Starts background tasks on startup and stops them on shutdown.
     """
-    # Startup: Start background task
-    logger.info("Starting background weekly update task...")
-    task = asyncio.create_task(run_daily_weekly_updates())
+    # Startup: Start background tasks
+    logger.info("Starting background tasks...")
+    weekly_task = asyncio.create_task(run_daily_weekly_updates())
+    state_task = asyncio.create_task(run_daily_state_updates())
     
     yield
     
-    # Shutdown: Cancel task
-    logger.info("Stopping background weekly update task...")
-    task.cancel()
+    # Shutdown: Cancel tasks
+    logger.info("Stopping background tasks...")
+    weekly_task.cancel()
+    state_task.cancel()
     try:
-        await task
+        await weekly_task
     except asyncio.CancelledError:
         logger.info("Background weekly update task cancelled successfully")
+    try:
+        await state_task
+    except asyncio.CancelledError:
+        logger.info("Background daily state update task cancelled successfully")
 
 
 # Create FastAPI app

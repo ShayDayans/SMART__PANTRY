@@ -312,6 +312,7 @@ class ShoppingListService:
         items = shopping_list.get("shopping_list_items", [])
         inventory_updates = []
         log_ids = []
+        log_states = {}  # Map log_id -> state_before_purchase
         
         # Get product service for product details
         from app.services.product_service import ProductService
@@ -340,6 +341,14 @@ class ShoppingListService:
             existing_inventory = self.supabase.table("inventory").select("*").eq(
                 "user_id", str(user_id)
             ).eq("product_id", product_id).execute()
+            
+            # IMPORTANT: Save current state BEFORE updating inventory (needed for predictor)
+            current_state_before_update = None
+            if existing_inventory.data and len(existing_inventory.data) > 0:
+                existing_item = existing_inventory.data[0]
+                state_str = existing_item.get("state")
+                if state_str:
+                    current_state_before_update = InventoryState(state_str)
             
             # Update or create inventory item as FULL
             inventory_data = {
@@ -395,6 +404,9 @@ class ShoppingListService:
             if log_result.data and len(log_result.data) > 0:
                 log_id = log_result.data[0].get("log_id")
                 log_ids.append(log_id)
+                # Store state before purchase for this log_id
+                if current_state_before_update:
+                    log_states[log_id] = current_state_before_update
                 
                 # If there's quantity feedback, create a feedback log entry
                 if qty_feedback:
@@ -431,6 +443,7 @@ class ShoppingListService:
             "shopping_list_id": str(shopping_list_id),
             "status": "COMPLETED",
             "inventory_updates": inventory_updates,
-            "log_ids": log_ids
+            "log_ids": log_ids,
+            "log_states": log_states  # Map log_id -> state_before_purchase
         }
 

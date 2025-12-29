@@ -333,13 +333,26 @@ class PredictorService:
             return st
         
         params_json, _conf, _updated_at, _ppid = row
+        # Ensure params_json is a dict and has empty_at field (for backward compatibility)
+        if not isinstance(params_json, dict):
+            params_json = {}
+        # Ensure empty_at exists (for backward compatibility with existing products)
+        if "empty_at" not in params_json:
+            params_json["empty_at"] = None
+        
         st = CycleEmaState.from_params_json(params_json)
         if st.category_id is None and category_id is not None:
             st.category_id = str(category_id)
         return st
     
-    def process_inventory_log(self, log_id: str) -> None:
-        """Process inventory log event and update predictions"""
+    def process_inventory_log(self, log_id: str, state_before_purchase: Optional[InventoryState] = None) -> None:
+        """
+        Process inventory log event and update predictions
+        
+        Args:
+            log_id: Inventory log ID to process
+            state_before_purchase: Optional state before purchase (for cases where inventory was already updated)
+        """
         row = self.repo.get_inventory_log_row(log_id)
         user_id = row["user_id"]
         product_id = row["product_id"]
@@ -354,8 +367,25 @@ class PredictorService:
         
         purchase_ev, feedback_ev = map_inventory_log_row_to_event(row)
         
+        # Get current inventory state before purchase (if purchase event)
+        # Use provided state_before_purchase if available, otherwise read from DB
+        current_state = state_before_purchase
+        if purchase_ev is not None and current_state is None:
+            try:
+                inventory_item = self.repo.supabase.table("inventory").select("state").eq(
+                    "user_id", user_id
+                ).eq("product_id", product_id).limit(1).execute()
+                if inventory_item.data and len(inventory_item.data) > 0:
+                    state_str = inventory_item.data[0].get("state")
+                    if state_str:
+                        current_state = InventoryState(state_str)
+            except Exception as e:
+                print(f"Warning: Could not get current inventory state: {e}")
+        
         if purchase_ev is not None:
-            state = apply_purchase(state, purchase_ev)
+            from ema_cycle_predictor import InventoryState as PredInventoryState
+            pred_current_state = PredInventoryState(current_state.value) if current_state else None
+            state = apply_purchase(state, purchase_ev, cfg, pred_current_state)
         
         if feedback_ev is not None:
             state = apply_feedback(state, feedback_ev, cfg)
@@ -420,8 +450,23 @@ class PredictorService:
             # Process the event to update the predictor model
             purchase_ev, feedback_ev = map_inventory_log_row_to_event(row)
             
+            # Get current inventory state before purchase (if purchase event)
+            current_state = None
             if purchase_ev is not None:
-                state = apply_purchase(state, purchase_ev)
+                try:
+                    inventory_item = self.repo.supabase.table("inventory").select("state").eq(
+                        "user_id", user_id
+                    ).eq("product_id", product_id).limit(1).execute()
+                    if inventory_item.data and len(inventory_item.data) > 0:
+                        state_str = inventory_item.data[0].get("state")
+                        if state_str:
+                            from ema_cycle_predictor import InventoryState as PredInventoryState
+                            current_state = PredInventoryState(state_str)
+                except Exception as e:
+                    print(f"Warning: Could not get current inventory state: {e}")
+            
+            if purchase_ev is not None:
+                state = apply_purchase(state, purchase_ev, cfg, current_state)
             
             if feedback_ev is not None:
                 state = apply_feedback(state, feedback_ev, cfg)
@@ -478,7 +523,7 @@ class PredictorService:
             
             # Create a purchase event with the quantity
             if PREDICTOR_AVAILABLE:
-                from ema_cycle_predictor import PurchaseEvent
+                from ema_cycle_predictor import PurchaseEvent, InventoryState as PredInventoryState
                 
                 purchase_event = PurchaseEvent(
                     ts=now,
@@ -486,8 +531,21 @@ class PredictorService:
                     reliability=1.0
                 )
                 
+                # Get current inventory state before purchase
+                current_state = None
+                try:
+                    inventory_item = self.repo.supabase.table("inventory").select("state").eq(
+                        "user_id", user_id
+                    ).eq("product_id", product_id).limit(1).execute()
+                    if inventory_item.data and len(inventory_item.data) > 0:
+                        state_str = inventory_item.data[0].get("state")
+                        if state_str:
+                            current_state = PredInventoryState(state_str)
+                except Exception as e:
+                    print(f"Warning: Could not get current inventory state: {e}")
+                
                 # Apply the purchase to update the predictor state
-                state = apply_purchase(state, purchase_event)
+                state = apply_purchase(state, purchase_event, cfg, current_state)
                 
                 # Note: The quantity information is stored in inventory.estimated_qty
                 # The predictor will learn consumption patterns over time through feedback events
@@ -568,14 +626,11 @@ class PredictorService:
     
     def weekly_model_update(self, user_id: str, product_id: str) -> None:
         """
-        Weekly model update - only for products whose cycle should have ended.
-        Updates the model based on:
-        1. Completed cycles (EMPTY events) - strong update
-        2. Unchanged predictions (user didn't update = prediction was correct) - weak confirmation
-        3. Changed predictions (user updated = prediction was wrong) - learn from correction
+        Weekly model update - DISABLED.
+        Model updates now happen only on purchase events (when empty_at != null or state=LOW).
         """
-        if not PREDICTOR_AVAILABLE:
-            return
+        # Model updates are now handled in apply_purchase, not in weekly updates
+        return
         
         now = datetime.now(timezone.utc)
         predictor_profile_id, cfg = self._load_cfg_and_profile(user_id)
@@ -700,6 +755,107 @@ class PredictorService:
         
         print(f"Weekly update: Product {product_id} - observed cycle: {observed} days, updated cycle_mean_days: {old_mean} -> {new_mean}")
         return
+    
+    def daily_state_update_all_products(self, user_id: str) -> None:
+        """
+        Daily state update for all products of a user.
+        Decreases days_left by 1 for each product and updates state accordingly.
+        Also updates last_pred_days_left in product_predictor_state.
+        """
+        if not PREDICTOR_AVAILABLE:
+            return
+        
+        now = datetime.now(timezone.utc)
+        predictor_profile_id, cfg = self._load_cfg_and_profile(user_id)
+        
+        products = self.repo.get_user_inventory_products(user_id)
+        updated_count = 0
+        
+        for product_id, category_id in products:
+            try:
+                # Load current state
+                state = self._load_or_init_state(user_id, product_id, predictor_profile_id, cfg, category_id, now)
+                
+                # Get current inventory item
+                inventory_item = self.repo.supabase.table("inventory").select("*").eq(
+                    "user_id", user_id
+                ).eq("product_id", product_id).limit(1).execute()
+                
+                if not inventory_item.data:
+                    continue
+                
+                current_item = inventory_item.data[0]
+                current_state_str = current_item.get("state")
+                
+                # Skip products that are already EMPTY
+                if current_state_str == "EMPTY":
+                    continue
+                
+                current_days_left = current_item.get("estimated_qty")
+                
+                if current_days_left is None:
+                    # If no days_left, calculate from cycle_mean_days
+                    mult = self.repo.get_active_habit_multiplier(user_id, product_id, category_id, now)
+                    from ema_cycle_predictor import compute_days_left
+                    current_days_left = compute_days_left(state, now, mult, cfg, inventory_days_left=None)
+                else:
+                    try:
+                        current_days_left = float(current_days_left)
+                    except (ValueError, TypeError):
+                        # If invalid, calculate from cycle_mean_days
+                        mult = self.repo.get_active_habit_multiplier(user_id, product_id, category_id, now)
+                        from ema_cycle_predictor import compute_days_left
+                        current_days_left = compute_days_left(state, now, mult, cfg, inventory_days_left=None)
+                
+                # Decrease by 1 day (but not below 0)
+                new_days_left = max(0.0, current_days_left - 1.0)
+                
+                # If days_left reached 0, save empty_at (if not already set)
+                if new_days_left <= 0.0 and state.empty_at is None:
+                    state.empty_at = now
+                
+                # Derive new state
+                from ema_cycle_predictor import derive_state, compute_confidence
+                new_state = derive_state(new_days_left, state.cycle_mean_days, cfg)
+                
+                # Update state.last_pred_days_left
+                state.last_pred_days_left = float(new_days_left)
+                state.last_update_at = now
+                
+                # Calculate confidence
+                confidence = compute_confidence(state, now, cfg)
+                
+                # Update product_predictor_state
+                params_json = state.to_params_json()
+                params_json = self._make_json_serializable(params_json)
+                self.repo.upsert_predictor_state(
+                    user_id=user_id,
+                    product_id=product_id,
+                    predictor_profile_id=predictor_profile_id,
+                    params=params_json,
+                    confidence=confidence,
+                    updated_at=now,
+                )
+                
+                # Update inventory
+                self.repo.upsert_inventory_days_estimate(
+                    user_id=user_id,
+                    product_id=product_id,
+                    days_left=new_days_left,
+                    state=InventoryState(new_state.value),
+                    confidence=confidence,
+                    source=InventorySource.SYSTEM,
+                )
+                
+                updated_count += 1
+                
+            except Exception as e:
+                logger.error(f"Error in daily state update for product {product_id}: {e}")
+                import traceback
+                traceback.print_exc()
+                continue
+        
+        logger.info(f"Daily state update completed for user {user_id}: {updated_count} products updated")
     
     def weekly_model_update_all_products(self, user_id: str) -> None:
         """

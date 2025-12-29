@@ -177,10 +177,13 @@ def learn_from_shopping_feedback(
                     else:
                         # If no cycle_mean_days yet, start with a small value (1-2 days)
                         new_days_left = 1.5
-                    print(f"[EMPTY->MORE] Moderate increase for product {product_id}: days_left = {new_days_left} (from cycle_mean_days = {state.cycle_mean_days})")
+                    # Reset empty_at since user indicates they have the product
+                    state.empty_at = None
+                    print(f"[EMPTY->MORE] Moderate increase for product {product_id}: days_left = {new_days_left} (from cycle_mean_days = {state.cycle_mean_days}), empty_at reset")
                 else:  # LESS
                     # If EMPTY and LESS: stay at 0 (or very small value)
                     new_days_left = 0.0
+                    # empty_at stays as is (not reset)
                     print(f"[EMPTY->LESS] Product {product_id} stays EMPTY")
             else:
                 # Normal case: product has days_left > 0

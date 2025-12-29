@@ -163,12 +163,18 @@ def complete_shopping_list(
     try:
         result = service.complete_shopping_list(shopping_list_id, user_id)
         
+        # Get states before purchase (if available)
+        log_states = result.get("log_states", {})
+        
         # Update predictor model for each product in background
         for log_id in result.get("log_ids", []):
             try:
+                # Get state before purchase for this log_id (if available)
+                state_before = log_states.get(log_id)
                 background_tasks.add_task(
                     predictor_service.process_inventory_log,
-                    log_id=str(log_id)
+                    log_id=str(log_id),
+                    state_before_purchase=state_before
                 )
             except Exception as e:
                 print(f"Error scheduling predictor update for log_id {log_id}: {e}")

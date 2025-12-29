@@ -242,10 +242,13 @@ def provide_feedback(
                 else:
                     # If no cycle_mean_days yet, start with a small value (1-2 days)
                     new_days_left = 1.5
-                logger.info(f"[EMPTY->MORE] Moderate increase for product {product_id}: days_left = {new_days_left} (from cycle_mean_days = {state.cycle_mean_days})")
+                # Reset empty_at since user indicates they have the product
+                state.empty_at = None
+                logger.info(f"[EMPTY->MORE] Moderate increase for product {product_id}: days_left = {new_days_left} (from cycle_mean_days = {state.cycle_mean_days}), empty_at reset")
             else:  # less
                 # If EMPTY and LESS: stay at 0 (or very small value)
                 new_days_left = 0.0
+                # empty_at stays as is (not reset)
                 logger.info(f"[EMPTY->LESS] Product {product_id} stays EMPTY")
         else:
             # Normal case: product has days_left > 0
@@ -372,6 +375,10 @@ def product_action(
     if not current_item:
         raise HTTPException(status_code=404, detail="Inventory item not found")
     
+    # IMPORTANT: Save current state BEFORE any updates (needed for predictor)
+    # This is the state before we update inventory to EMPTY or FULL
+    current_state_before_update = InventoryState(current_item.get("state", "UNKNOWN"))
+    
     # Create log entry
     log_create = InventoryLogCreate(
         product_id=product_id,
@@ -424,11 +431,13 @@ def product_action(
             )
             service.update_inventory(user_id, product_id, inventory_update_full, log_change=False)
             
-            # Process purchase log for predictor
+            # Process purchase log for predictor with state BEFORE purchase
+            # Use the state we saved at the beginning (before any updates)
             if purchase_log_entry:
                 background_tasks.add_task(
                     predictor_service.process_inventory_log,
-                    log_id=str(purchase_log_entry.get("log_id"))
+                    log_id=str(purchase_log_entry.get("log_id")),
+                    state_before_purchase=current_state_before_update
                 )
         except Exception as e:
             print(f"Warning: Could not create purchase log: {e}")

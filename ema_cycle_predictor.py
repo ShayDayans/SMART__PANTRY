@@ -136,17 +136,22 @@ class CycleEmaState:
     # Optional for convenience
     category_id: Optional[str] = None
     last_feedback_at: Optional[datetime] = None  # Track last MORE/LESS feedback for adaptive learning
+    empty_at: Optional[datetime] = None  # Date when product ran out (state=EMPTY for first time)
 
     def to_params_json(self) -> Dict[str, Any]:
         d = asdict(self)
         # datetimes -> iso
-        for k in ["cycle_started_at", "last_purchase_at", "last_update_at"]:
+        for k in ["cycle_started_at", "last_purchase_at", "last_update_at", "empty_at", "last_feedback_at"]:
             if d[k] is not None:
                 d[k] = d[k].astimezone(timezone.utc).isoformat()
         return d
 
     @staticmethod
     def from_params_json(params: Dict[str, Any]) -> "CycleEmaState":
+        # Ensure params is a dict (for backward compatibility)
+        if not isinstance(params, dict):
+            params = {}
+        
         def parse_dt(x: Any) -> Optional[datetime]:
             if x is None:
                 return None
@@ -188,6 +193,7 @@ class CycleEmaState:
             waste_events=int(params.get("waste_events", 0)),
             category_id=(None if params.get("category_id") is None else str(params["category_id"])),
             last_feedback_at=parse_dt(params.get("last_feedback_at")),  # Track last MORE/LESS feedback
+            empty_at=parse_dt(params.get("empty_at")),  # Date when product ran out
         )
 
 
@@ -322,6 +328,7 @@ def init_state_from_category(category_id: Optional[str], cfg: PredictorConfig, n
         waste_events=0,
         category_id=(str(category_id) if category_id is not None else None),
         last_feedback_at=None,  # Initialize last_feedback_at
+        empty_at=None,  # Initialize empty_at
     )
 
 
@@ -344,33 +351,34 @@ class FeedbackEvent:
     note: Optional[str] = None  # Store note for WASTED reason analysis
 
 
-def apply_purchase(state: CycleEmaState, ev: PurchaseEvent) -> CycleEmaState:
-    # If a cycle is currently active and a purchase occurs before EMPTY,
-    # mark it censored and start a new cycle.
-    if state.cycle_started_at is not None:
-        state.censored_cycles += 1
-
-    state.cycle_started_at = ev.ts
-    state.last_purchase_at = ev.ts
-    state.last_update_at = ev.ts
-    # no mean/mad update
-    return state
-
-
-def apply_feedback(state: CycleEmaState, ev: FeedbackEvent, cfg: PredictorConfig) -> CycleEmaState:
-    state.last_update_at = ev.ts
-    state.n_total_updates += 1
-
-    if ev.kind == FeedbackKind.EMPTY:
-        # Strong observation: close cycle
-        if state.cycle_started_at is None:
-            # no active cycle; treat as noisy signal: only increase mad slightly
-            state.cycle_mad_days = _clamp(state.cycle_mad_days * 1.05, 0.1, cfg.max_cycle_days)
-            return state
-
+def apply_purchase(state: CycleEmaState, ev: PurchaseEvent, cfg: PredictorConfig, current_state: Optional[InventoryState] = None) -> CycleEmaState:
+    """
+    Apply purchase event and update model if needed.
+    
+    Args:
+        state: Current predictor state
+        ev: Purchase event
+        cfg: Predictor config
+        current_state: Current inventory state (FULL/MEDIUM/LOW/EMPTY) before purchase
+    """
+    # Determine if we should update the mean based on empty_at or current state
+    should_update_mean = False
+    observed = None
+    
+    # Case 1: empty_at != null (product ran out)
+    if state.empty_at is not None and state.cycle_started_at is not None:
+        should_update_mean = True
+        observed = _days_between(state.empty_at, state.cycle_started_at)
+        observed = _clamp(observed, cfg.min_cycle_days, cfg.max_cycle_days)
+    
+    # Case 2: empty_at == null but current_state is LOW
+    elif state.empty_at is None and current_state == InventoryState.LOW and state.cycle_started_at is not None:
+        should_update_mean = True
         observed = _days_between(ev.ts, state.cycle_started_at)
         observed = _clamp(observed, cfg.min_cycle_days, cfg.max_cycle_days)
-
+    
+    # Update mean if needed
+    if should_update_mean and observed is not None:
         old_mean = state.cycle_mean_days
         n_cycles = state.n_completed_cycles
         
@@ -383,7 +391,7 @@ def apply_feedback(state: CycleEmaState, ev: FeedbackEvent, cfg: PredictorConfig
             new_mean = (old_mean * n_cycles + observed) / (n_cycles + 1)
         
         new_mean = _clamp(new_mean, cfg.min_cycle_days, cfg.max_cycle_days)
-
+        
         # Update MAD based on error (cumulative average of absolute errors)
         err = observed - old_mean
         if n_cycles == 0:
@@ -391,18 +399,41 @@ def apply_feedback(state: CycleEmaState, ev: FeedbackEvent, cfg: PredictorConfig
             new_mad = abs(err) if abs(err) > 0 else 0.1
         else:
             # Cumulative average of absolute errors
-            # cycle_mad_days is the average of n_cycles, so sum = cycle_mad_days * n_cycles
             current_mad_sum = state.cycle_mad_days * n_cycles
             new_mad = (current_mad_sum + abs(err)) / (n_cycles + 1)
         new_mad = _clamp(new_mad, 0.1, cfg.max_cycle_days)
-
+        
         state.cycle_mean_days = float(new_mean)
         state.cycle_mad_days = float(new_mad)
-        state.n_completed_cycles += 1  # Increment completed cycles count
+        state.n_completed_cycles += 1
         state.n_strong_updates += 1
+    elif state.cycle_started_at is not None:
+        # If we're not updating mean but had an active cycle, mark it as censored
+        # (only if state is FULL/MEDIUM - LOW already updated mean)
+        if current_state in (InventoryState.FULL, InventoryState.MEDIUM):
+            state.censored_cycles += 1
+    
+    # Reset cycle and empty_at
+    state.cycle_started_at = ev.ts
+    state.last_purchase_at = ev.ts
+    state.last_update_at = ev.ts
+    state.empty_at = None  # Reset empty_at on purchase
+    
+    return state
 
-        # no active cycle until next purchase
-        state.cycle_started_at = None
+
+def apply_feedback(state: CycleEmaState, ev: FeedbackEvent, cfg: PredictorConfig) -> CycleEmaState:
+    state.last_update_at = ev.ts
+    state.n_total_updates += 1
+
+    if ev.kind == FeedbackKind.EMPTY:
+        # Store empty_at timestamp (when product ran out)
+        # Don't update mean here - it will be updated on next purchase
+        if state.empty_at is None:
+            state.empty_at = ev.ts
+        
+        # cycle_started_at stays as is (needed to calculate observed on next purchase)
+        # Don't reset cycle_started_at to None - we need it for the calculation
         return state
 
     if ev.kind == FeedbackKind.WASTED:

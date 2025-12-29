@@ -245,9 +245,64 @@ def chat_with_llm(
         except Exception as e:
             pass  # Log error but don't fail
     
-    # Apply model insights to update predictor (if any)
+    # Apply consumption patterns and model insights to update predictor
     predictor_service = PredictorService(supabase)
     try:
+        # Process consumption patterns - create habits for products mentioned
+        if consumption_patterns:
+            for pattern in consumption_patterns:
+                product_name = pattern.get("product_name")
+                frequency = pattern.get("frequency", "weekly")
+                estimated_days = pattern.get("estimated_days_per_cycle", 7)
+                
+                if product_name:
+                    # Find product by name
+                    products_result = supabase.table("products").select("product_id, category_id").ilike(
+                        "product_name", f"%{product_name}%"
+                    ).limit(1).execute()
+                    
+                    if products_result.data:
+                        product_id = products_result.data[0]["product_id"]
+                        category_id = products_result.data[0].get("category_id")
+                        
+                        # Calculate multiplier based on frequency
+                        # If daily consumption, multiplier should be higher (consume faster)
+                        multiplier = 1.0
+                        if frequency == "daily":
+                            multiplier = 1.3  # 30% faster consumption
+                        elif frequency == "weekly":
+                            multiplier = 1.0
+                        elif "quick" in pattern.get("pattern", "").lower() or "fast" in pattern.get("pattern", "").lower():
+                            multiplier = 1.2  # 20% faster
+                        
+                        # Create habit for this consumption pattern
+                        effects = {
+                            "product_multipliers": {
+                                str(product_id): multiplier
+                            }
+                        }
+                        
+                        if category_id:
+                            effects.setdefault("category_multipliers", {})[str(category_id)] = multiplier
+                        
+                        habit_create = HabitCreate(
+                            type=HabitType.DIET,
+                            status=HabitStatus.ACTIVE,
+                            explanation=f"AI-detected consumption pattern: {pattern.get('pattern', '')} for {product_name}",
+                            effects=effects,
+                            params={
+                                "frequency": frequency,
+                                "estimated_days_per_cycle": estimated_days
+                            }
+                        )
+                        try:
+                            created_habit = service.create_habit(str(user_id), habit_create)
+                            created_habits.append(created_habit)
+                        except Exception as e:
+                            import logging
+                            logging.error(f"Error creating habit from consumption pattern: {e}")
+        
+        # Process model insights suggested adjustments
         if model_insights.get("suggested_adjustments"):
             for adjustment in model_insights["suggested_adjustments"]:
                 product_name = adjustment.get("product_name")
@@ -255,32 +310,39 @@ def chat_with_llm(
                 
                 if product_name and suggested_multiplier:
                     # Find product by name
-                    products_result = supabase.table("products").select("product_id").ilike(
+                    products_result = supabase.table("products").select("product_id, category_id").ilike(
                         "product_name", f"%{product_name}%"
                     ).limit(1).execute()
                     
                     if products_result.data:
                         product_id = products_result.data[0]["product_id"]
-                        # Update habit multiplier for this product
-                        # This will be applied through get_active_habit_multiplier
-                        # For now, we create a habit with product-specific multiplier
+                        category_id = products_result.data[0].get("category_id")
+                        
+                        effects = {
+                            "product_multipliers": {
+                                str(product_id): suggested_multiplier
+                            }
+                        }
+                        
+                        if category_id:
+                            effects.setdefault("category_multipliers", {})[str(category_id)] = suggested_multiplier
+                        
                         habit_create = HabitCreate(
                             type=HabitType.OTHER,
                             status=HabitStatus.ACTIVE,
                             explanation=f"AI-suggested adjustment for {product_name}: {adjustment.get('reason', '')}",
-                            effects={
-                                "product_multipliers": {
-                                    str(product_id): suggested_multiplier
-                                }
-                            },
+                            effects=effects,
                             params={}
                         )
                         try:
-                            service.create_habit(str(user_id), habit_create)
-                        except Exception:
-                            pass
+                            created_habit = service.create_habit(str(user_id), habit_create)
+                            created_habits.append(created_habit)
+                        except Exception as e:
+                            import logging
+                            logging.error(f"Error creating habit from model insight: {e}")
     except Exception as e:
-        pass  # Log error but don't fail
+        import logging
+        logging.error(f"Error applying consumption patterns and model insights: {e}")
     
     return ChatResponse(
         response=gpt_response.get("response", "I've updated your preferences."),
