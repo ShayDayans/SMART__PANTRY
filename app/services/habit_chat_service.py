@@ -21,11 +21,10 @@ class HabitChatService:
         
         try:
             self.client = OpenAI(api_key=self.api_key)
-        except Exception:
-            # Fallback for newer OpenAI versions
-            import openai
-            openai.api_key = self.api_key
-            self.client = openai
+        except Exception as e:
+            logger.error(f"Error initializing OpenAI client: {e}")
+            # Fallback for newer OpenAI versions (should not be needed with openai>=1.55.3)
+            raise ValueError(f"Failed to initialize OpenAI client: {str(e)}")
     
     def chat_with_user(
         self,

@@ -624,6 +624,92 @@ class PredictorService:
             )
             self.repo.insert_forecast(user_id, product_id, fc, trigger_log_id=None)
     
+    def refresh_products_affected_by_habit(self, user_id: str, habit_effects: Dict[str, Any]) -> None:
+        """
+        Refresh predictions for products affected by a habit's effects.
+        
+        Args:
+            user_id: User ID
+            habit_effects: Habit effects dict containing:
+                - product_multipliers: {product_id: multiplier}
+                - category_multipliers: {category_id: multiplier}
+        """
+        if not habit_effects:
+            return
+        
+        now = datetime.now(timezone.utc)
+        predictor_profile_id, cfg = self._load_cfg_and_profile(user_id)
+        
+        # Collect all affected product IDs
+        affected_product_ids = set()
+        
+        # Get products directly affected by product_multipliers
+        product_multipliers = habit_effects.get("product_multipliers", {})
+        if product_multipliers:
+            for product_id in product_multipliers.keys():
+                affected_product_ids.add(str(product_id))
+        
+        # Get products affected by category_multipliers
+        category_multipliers = habit_effects.get("category_multipliers", {})
+        if category_multipliers:
+            # Get all products in user's inventory
+            user_products = self.repo.get_user_inventory_products(user_id)
+            
+            # Find products in affected categories
+            affected_category_ids = set(category_multipliers.keys())
+            for product_id, category_id in user_products:
+                if category_id and str(category_id) in affected_category_ids:
+                    affected_product_ids.add(str(product_id))
+        
+        # Get user's inventory products once
+        user_products = self.repo.get_user_inventory_products(user_id)
+        user_product_ids = {str(pid) for pid, _ in user_products}
+        
+        # Refresh predictions for all affected products
+        for product_id in affected_product_ids:
+            try:
+                # Only refresh if product is in user's inventory
+                if product_id not in user_product_ids:
+                    continue
+                
+                # Get category_id for this product
+                category_id = None
+                for pid, cid in user_products:
+                    if str(pid) == product_id:
+                        category_id = cid
+                        break
+                
+                state = self._load_or_init_state(user_id, product_id, predictor_profile_id, cfg, category_id, now)
+                mult = self.repo.get_active_habit_multiplier(user_id, product_id, category_id, now)
+                fc = predict(state, now, mult, cfg)
+                state = stamp_last_prediction(state, fc)
+                
+                # Convert params to JSON-serializable format
+                params_json = state.to_params_json()
+                params_json = self._make_json_serializable(params_json)
+                
+                self.repo.upsert_predictor_state(
+                    user_id=user_id,
+                    product_id=product_id,
+                    predictor_profile_id=predictor_profile_id,
+                    params=params_json,
+                    confidence=fc.confidence,
+                    updated_at=now,
+                )
+                self.repo.upsert_inventory_days_estimate(
+                    user_id=user_id,
+                    product_id=product_id,
+                    days_left=fc.expected_days_left,
+                    state=InventoryState(fc.predicted_state.value),
+                    confidence=fc.confidence,
+                    source=InventorySource.SYSTEM,
+                )
+                self.repo.insert_forecast(user_id, product_id, fc, trigger_log_id=None)
+            except Exception as e:
+                import logging
+                logging.error(f"Error refreshing prediction for product {product_id} after habit creation: {e}")
+                continue
+    
     def weekly_model_update(self, user_id: str, product_id: str) -> None:
         """
         Weekly model update - DISABLED.

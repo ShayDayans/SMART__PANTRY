@@ -151,7 +151,7 @@ async def run_daily_state_updates():
             current_minute = now.minute
             
             # Run at 00:00 every day (after weekly update)
-            if current_hour == 0 and current_minute == 0:
+            if current_hour == 18 and current_minute == 0:
                 logger.info("[DAILY STATE UPDATE] Running daily state update for all products")
                 
                 supabase = get_supabase()

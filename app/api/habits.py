@@ -1,7 +1,7 @@
 """
 Habits API routes
 """
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Query
 from typing import List, Optional
 from uuid import UUID
 from supabase import Client
@@ -26,8 +26,8 @@ def get_habit_service(supabase: Client = Depends(get_supabase)) -> HabitService:
 
 @router.get("", response_model=List[HabitResponse])
 def get_habits(
-    type: Optional[HabitType] = None,
-    status: Optional[HabitStatus] = None,
+    type: Optional[HabitType] = Query(None, description="Filter by habit type"),
+    status: Optional[HabitStatus] = Query(None, description="Filter by habit status"),
     user_id: UUID = Depends(get_current_user_id),
     service: HabitService = Depends(get_habit_service)
 ):
@@ -63,11 +63,27 @@ def get_habit(
 def create_habit(
     habit: HabitCreate,
     user_id: UUID = Depends(get_current_user_id),
-    service: HabitService = Depends(get_habit_service)
+    service: HabitService = Depends(get_habit_service),
+    supabase: Client = Depends(get_supabase)
 ):
     """Create a new habit"""
     try:
         created_habit = service.create_habit(str(user_id), habit)
+        
+        # If habit is ACTIVE and has effects, refresh predictions for affected products
+        if habit.status == HabitStatus.ACTIVE and habit.effects:
+            try:
+                from app.services.predictor_service import PredictorService
+                predictor_service = PredictorService(supabase)
+                predictor_service.refresh_products_affected_by_habit(
+                    str(user_id),
+                    habit.effects
+                )
+            except Exception as e:
+                import logging
+                logging.error(f"Error refreshing predictions after habit creation: {e}")
+                # Don't fail the request if prediction refresh fails
+        
         return created_habit
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -116,7 +132,7 @@ def create_habit_input(
 
 @router.get("/inputs", response_model=List[HabitInputResponse])
 def get_habit_inputs(
-    habit_id: Optional[UUID] = None,
+    habit_id: Optional[UUID] = Query(None, description="Optional habit ID to filter inputs"),
     user_id: UUID = Depends(get_current_user_id),
     service: HabitService = Depends(get_habit_service)
 ):
@@ -229,6 +245,10 @@ def chat_with_llm(
     except Exception as e:
         pass  # Log error but don't fail the request
     
+    # Initialize predictor service for refreshing predictions
+    from app.services.predictor_service import PredictorService
+    predictor_service = PredictorService(supabase)
+    
     # Create suggested habits if any
     created_habits = []
     for suggested_habit in suggested_habits:
@@ -242,11 +262,21 @@ def chat_with_llm(
             )
             created_habit = service.create_habit(str(user_id), habit_create)
             created_habits.append(created_habit)
+            
+            # Refresh predictions for products affected by this habit
+            if habit_create.effects:
+                try:
+                    predictor_service.refresh_products_affected_by_habit(
+                        str(user_id),
+                        habit_create.effects
+                    )
+                except Exception as e:
+                    import logging
+                    logging.error(f"Error refreshing predictions after suggested habit creation: {e}")
         except Exception as e:
             pass  # Log error but don't fail
     
     # Apply consumption patterns and model insights to update predictor
-    predictor_service = PredictorService(supabase)
     try:
         # Process consumption patterns - create habits for products mentioned
         if consumption_patterns:
@@ -298,6 +328,16 @@ def chat_with_llm(
                         try:
                             created_habit = service.create_habit(str(user_id), habit_create)
                             created_habits.append(created_habit)
+                            
+                            # Refresh predictions for products affected by this habit
+                            try:
+                                predictor_service.refresh_products_affected_by_habit(
+                                    str(user_id),
+                                    effects
+                                )
+                            except Exception as e:
+                                import logging
+                                logging.error(f"Error refreshing predictions after consumption pattern habit creation: {e}")
                         except Exception as e:
                             import logging
                             logging.error(f"Error creating habit from consumption pattern: {e}")
@@ -337,6 +377,16 @@ def chat_with_llm(
                         try:
                             created_habit = service.create_habit(str(user_id), habit_create)
                             created_habits.append(created_habit)
+                            
+                            # Refresh predictions for products affected by this habit
+                            try:
+                                predictor_service.refresh_products_affected_by_habit(
+                                    str(user_id),
+                                    effects
+                                )
+                            except Exception as e:
+                                import logging
+                                logging.error(f"Error refreshing predictions after model insight habit creation: {e}")
                         except Exception as e:
                             import logging
                             logging.error(f"Error creating habit from model insight: {e}")
