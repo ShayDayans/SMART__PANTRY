@@ -71,11 +71,11 @@ class ReceiptScannerService:
             raise ValueError("OpenAI API key is required")
         try:
             self.client = OpenAI(api_key=self.api_key)
-        except TypeError:
-            # Fallback for newer OpenAI versions
-            import openai
-            openai.api_key = self.api_key
-            self.client = openai
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Error initializing OpenAI client: {e}")
+            raise ValueError(f"Failed to initialize OpenAI client: {str(e)}")
     
     def scan_receipt_from_url(self, image_url: str) -> ReceiptScanResult:
         """

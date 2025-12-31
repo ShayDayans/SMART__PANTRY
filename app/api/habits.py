@@ -170,21 +170,8 @@ def chat_with_llm(
     
     chat_service = HabitChatService(openai_api_key)
     
-    # Get conversation history
-    try:
-        previous_inputs = service.get_habit_inputs(str(user_id))
-        conversation_history = []
-        for inp in previous_inputs[-10:]:  # Last 10 messages
-            if inp.get("raw_text"):
-                conversation_history.append({"role": "user", "content": inp["raw_text"]})
-            if inp.get("extracted_json"):
-                # Add assistant response based on extracted data
-                conversation_history.append({
-                    "role": "assistant",
-                    "content": f"I've updated your preferences based on: {inp.get('raw_text', '')}"
-                })
-    except Exception as e:
-        conversation_history = []
+    # Conversation history disabled - each message is processed independently
+    conversation_history = []
     
     # Get current user preferences
     try:
@@ -223,14 +210,12 @@ def chat_with_llm(
         )
     
     extracted_data = gpt_response.get("extracted_data", {})
-    consumption_patterns = gpt_response.get("consumption_patterns", [])
     model_insights = gpt_response.get("model_insights", {})
     suggested_habits = gpt_response.get("suggested_habits", [])
     
     # Save the chat input with full GPT response
     full_extracted_data = {
         "extracted_data": extracted_data,
-        "consumption_patterns": consumption_patterns,
         "model_insights": model_insights
     }
     
@@ -276,15 +261,22 @@ def chat_with_llm(
         except Exception as e:
             pass  # Log error but don't fail
     
-    # Apply consumption patterns and model insights to update predictor
+    # Apply model insights to update predictor
     try:
-        # Process consumption patterns - create habits for products mentioned
-        if consumption_patterns:
-            for pattern in consumption_patterns:
-                product_name = pattern.get("product_name")
-                frequency = pattern.get("frequency", "weekly")
-                estimated_days = pattern.get("estimated_days_per_cycle", 7)
+        # Process model insights suggested adjustments
+        if model_insights.get("suggested_adjustments"):
+            for adjustment in model_insights["suggested_adjustments"]:
+                product_name = adjustment.get("product_name")
+                category_name = adjustment.get("category_name")
+                suggested_multiplier = adjustment.get("suggested_multiplier")
                 
+                if not suggested_multiplier:
+                    continue
+                
+                effects = {}
+                habit_explanation = ""
+                
+                # Priority: product_name takes precedence (more specific than category)
                 if product_name:
                     # Find product by name
                     products_result = supabase.table("products").select("product_id, category_id").ilike(
@@ -293,106 +285,56 @@ def chat_with_llm(
                     
                     if products_result.data:
                         product_id = products_result.data[0]["product_id"]
-                        category_id = products_result.data[0].get("category_id")
-                        
-                        # Calculate multiplier based on frequency
-                        # If daily consumption, multiplier should be higher (consume faster)
-                        multiplier = 1.0
-                        if frequency == "daily":
-                            multiplier = 1.3  # 30% faster consumption
-                        elif frequency == "weekly":
-                            multiplier = 1.0
-                        elif "quick" in pattern.get("pattern", "").lower() or "fast" in pattern.get("pattern", "").lower():
-                            multiplier = 1.2  # 20% faster
-                        
-                        # Create habit for this consumption pattern
-                        effects = {
-                            "product_multipliers": {
-                                str(product_id): multiplier
-                            }
-                        }
-                        
-                        if category_id:
-                            effects.setdefault("category_multipliers", {})[str(category_id)] = multiplier
-                        
-                        habit_create = HabitCreate(
-                            type=HabitType.DIET,
-                            status=HabitStatus.ACTIVE,
-                            explanation=f"AI-detected consumption pattern: {pattern.get('pattern', '')} for {product_name}",
-                            effects=effects,
-                            params={
-                                "frequency": frequency,
-                                "estimated_days_per_cycle": estimated_days
-                            }
-                        )
-                        try:
-                            created_habit = service.create_habit(str(user_id), habit_create)
-                            created_habits.append(created_habit)
-                            
-                            # Refresh predictions for products affected by this habit
-                            try:
-                                predictor_service.refresh_products_affected_by_habit(
-                                    str(user_id),
-                                    effects
-                                )
-                            except Exception as e:
-                                import logging
-                                logging.error(f"Error refreshing predictions after consumption pattern habit creation: {e}")
-                        except Exception as e:
-                            import logging
-                            logging.error(f"Error creating habit from consumption pattern: {e}")
-        
-        # Process model insights suggested adjustments
-        if model_insights.get("suggested_adjustments"):
-            for adjustment in model_insights["suggested_adjustments"]:
-                product_name = adjustment.get("product_name")
-                suggested_multiplier = adjustment.get("suggested_multiplier")
-                
-                if product_name and suggested_multiplier:
-                    # Find product by name
-                    products_result = supabase.table("products").select("product_id, category_id").ilike(
-                        "product_name", f"%{product_name}%"
-                    ).limit(1).execute()
-                    
-                    if products_result.data:
-                        product_id = products_result.data[0]["product_id"]
-                        category_id = products_result.data[0].get("category_id")
-                        
                         effects = {
                             "product_multipliers": {
                                 str(product_id): suggested_multiplier
                             }
                         }
+                        habit_explanation = f"AI-suggested adjustment for {product_name}: {adjustment.get('reason', '')}"
+                
+                elif category_name:
+                    # Find category by name
+                    categories_result = supabase.table("product_categories").select("category_id").ilike(
+                        "category_name", f"%{category_name}%"
+                    ).limit(1).execute()
+                    
+                    if categories_result.data:
+                        category_id = categories_result.data[0]["category_id"]
+                        effects = {
+                            "category_multipliers": {
+                                str(category_id): suggested_multiplier
+                            }
+                        }
+                        habit_explanation = f"AI-suggested adjustment for {category_name} category: {adjustment.get('reason', '')}"
+                
+                # Create habit if we have effects
+                if effects:
+                    habit_create = HabitCreate(
+                        type=HabitType.OTHER,
+                        status=HabitStatus.ACTIVE,
+                        explanation=habit_explanation,
+                        effects=effects,
+                        params={}
+                    )
+                    try:
+                        created_habit = service.create_habit(str(user_id), habit_create)
+                        created_habits.append(created_habit)
                         
-                        if category_id:
-                            effects.setdefault("category_multipliers", {})[str(category_id)] = suggested_multiplier
-                        
-                        habit_create = HabitCreate(
-                            type=HabitType.OTHER,
-                            status=HabitStatus.ACTIVE,
-                            explanation=f"AI-suggested adjustment for {product_name}: {adjustment.get('reason', '')}",
-                            effects=effects,
-                            params={}
-                        )
+                        # Refresh predictions for products affected by this habit
                         try:
-                            created_habit = service.create_habit(str(user_id), habit_create)
-                            created_habits.append(created_habit)
-                            
-                            # Refresh predictions for products affected by this habit
-                            try:
-                                predictor_service.refresh_products_affected_by_habit(
-                                    str(user_id),
-                                    effects
-                                )
-                            except Exception as e:
-                                import logging
-                                logging.error(f"Error refreshing predictions after model insight habit creation: {e}")
+                            predictor_service.refresh_products_affected_by_habit(
+                                str(user_id),
+                                effects
+                            )
                         except Exception as e:
                             import logging
-                            logging.error(f"Error creating habit from model insight: {e}")
+                            logging.error(f"Error refreshing predictions after model insight habit creation: {e}")
+                    except Exception as e:
+                        import logging
+                        logging.error(f"Error creating habit from model insight: {e}")
     except Exception as e:
         import logging
-        logging.error(f"Error applying consumption patterns and model insights: {e}")
+        logging.error(f"Error applying model insights: {e}")
     
     return ChatResponse(
         response=gpt_response.get("response", "I've updated your preferences."),

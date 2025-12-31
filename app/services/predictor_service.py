@@ -598,8 +598,15 @@ class PredictorService:
         items = self.repo.get_user_inventory_products(user_id)
         for product_id, category_id in items:
             state = self._load_or_init_state(user_id, product_id, predictor_profile_id, cfg, category_id, now)
+            
+            # Use last_pred_days_left from state (already in memory, no DB read needed)
+            # This represents the model's last prediction and should be synchronized with inventory.estimated_qty
+            # in normal operation. Using it ensures we apply the multiplier to the correct base value.
+            base_days_left = state.last_pred_days_left if state.last_pred_days_left is not None else None
+            
             mult = self.repo.get_active_habit_multiplier(user_id, product_id, category_id, now)
-            fc = predict(state, now, mult, cfg)
+            # Use predict() with base_days_left to ensure correct multiplier application
+            fc = predict(state, now, mult, cfg, inventory_days_left=base_days_left)
             state = stamp_last_prediction(state, fc)
             
             # Convert params to JSON-serializable format
@@ -680,8 +687,15 @@ class PredictorService:
                         break
                 
                 state = self._load_or_init_state(user_id, product_id, predictor_profile_id, cfg, category_id, now)
+                
+                # Use last_pred_days_left from state (already in memory, no DB read needed)
+                # This represents the model's last prediction and should be synchronized with inventory.estimated_qty
+                # in normal operation. Using it ensures we apply the multiplier to the correct base value.
+                base_days_left = state.last_pred_days_left if state.last_pred_days_left is not None else None
+                
                 mult = self.repo.get_active_habit_multiplier(user_id, product_id, category_id, now)
-                fc = predict(state, now, mult, cfg)
+                # Use predict() with base_days_left to ensure correct multiplier application
+                fc = predict(state, now, mult, cfg, inventory_days_left=base_days_left)
                 state = stamp_last_prediction(state, fc)
                 
                 # Convert params to JSON-serializable format

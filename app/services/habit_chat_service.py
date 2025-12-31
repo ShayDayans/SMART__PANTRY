@@ -59,7 +59,6 @@ Your role is to:
 4. Provide insights that can help improve the AI prediction model
 
 IMPORTANT: Extract ALL information you can find, even if it's implicit. For example:
-- "yogurt is a significant part of your diet" → consumption_patterns: [{"product_name": "yogurt", "pattern": "significant consumption", "frequency": "daily"}]
 - "we are 4 people" → household_size: 4
 - "I shop every Sunday" → preferred_shopping_day: "Sunday", shopping_frequency: "weekly"
 - "we don't eat meat" → excluded_categories: ["meat"], dietary_preferences: ["vegetarian"]
@@ -70,7 +69,6 @@ Extract information about:
 - Cooking frequency (look for "cook", "prepare meals", "kitchen")
 - Dietary preferences (vegetarian, vegan, kosher, halal, etc.)
 - Excluded food categories (meat, dairy, gluten, etc.)
-- Consumption patterns (mentions of specific products, frequency of use, "go through quickly", "eat daily", etc.)
 - Special events or habits that affect consumption
 
 Return your response in JSON format with the following structure (ALL fields are required, use null for missing values):
@@ -85,18 +83,11 @@ Return your response in JSON format with the following structure (ALL fields are
     "excluded_categories": ["meat", "dairy", ...] or [],
     "notes": "Any additional notes" or null
   },
-  "consumption_patterns": [
-    {
-      "product_name": "yogurt",
-      "pattern": "significant consumption",
-      "frequency": "daily",
-      "estimated_days_per_cycle": 7
-    }
-  ],
   "model_insights": {
     "suggested_adjustments": [
       {
         "product_name": "yogurt",
+        "category_name": null,
         "reason": "User mentioned yogurt is significant part of diet",
         "suggested_multiplier": 1.2
       }
@@ -105,7 +96,8 @@ Return your response in JSON format with the following structure (ALL fields are
   }
 }
 
-CRITICAL: Always populate consumption_patterns if you detect any product mentions or consumption patterns, even if other fields are null."""
+IMPORTANT: 
+- suggested_adjustments: Use product_name for specific products, OR category_name for explicit category mentions (mutually exclusive - product_name takes precedence). Only use category_name when user explicitly mentions a category name or clearly refers to a whole category (e.g., "I eat a lot of meat", "we don't consume dairy"). Do NOT infer category adjustments from single product mentions."""
         
         # Build user context
         context_parts = []
@@ -149,24 +141,15 @@ CRITICAL: Always populate consumption_patterns if you detect any product mention
             
             # Extract data
             extracted_data = parsed_response.get("extracted_data", {}) or {}
-            consumption_patterns = parsed_response.get("consumption_patterns", []) or []
             model_insights = parsed_response.get("model_insights", {}) or {}
             gpt_response = parsed_response.get("response", "I've updated your preferences.")
             
-            # If consumption_patterns exist but extracted_data is empty, try to extract from patterns
-            if consumption_patterns and not extracted_data.get("notes"):
-                pattern_descriptions = [p.get("pattern", "") for p in consumption_patterns if p.get("pattern")]
-                if pattern_descriptions:
-                    extracted_data["notes"] = "; ".join(pattern_descriptions)
-            
             logger.info(f"Final extracted_data: {extracted_data}")
-            logger.info(f"Final consumption_patterns: {consumption_patterns}")
             logger.info(f"Final model_insights: {model_insights}")
             
             return {
                 "response": gpt_response,
                 "extracted_data": extracted_data,
-                "consumption_patterns": consumption_patterns,
                 "model_insights": model_insights,
                 "suggested_habits": model_insights.get("new_habits", [])
             }
@@ -178,7 +161,6 @@ CRITICAL: Always populate consumption_patterns if you detect any product mention
             return {
                 "response": "I understand. Let me help you update your preferences.",
                 "extracted_data": {},
-                "consumption_patterns": [],
                 "model_insights": {},
                 "suggested_habits": []
             }

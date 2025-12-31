@@ -495,8 +495,22 @@ def apply_feedback(state: CycleEmaState, ev: FeedbackEvent, cfg: PredictorConfig
 # ----------------------------
 # Prediction
 # ----------------------------
-def predict(state: CycleEmaState, now: datetime, multiplier: float, cfg: PredictorConfig) -> Forecast:
-    days_left = compute_days_left(state, now, multiplier, cfg)
+def predict(state: CycleEmaState, now: datetime, multiplier: float, cfg: PredictorConfig, inventory_days_left: Optional[float] = None) -> Forecast:
+    """
+    Predict days left for a product.
+    
+    Args:
+        state: Current predictor state
+        now: Current timestamp
+        multiplier: Consumption multiplier (from habits, >1 means faster consumption)
+        cfg: Predictor configuration
+        inventory_days_left: Optional current inventory days_left value (from user updates).
+                           If provided, this value will be used as the base and multiplier applied to it.
+    
+    Returns:
+        Forecast object with predicted days left, state, and confidence
+    """
+    days_left = compute_days_left(state, now, multiplier, cfg, inventory_days_left=inventory_days_left)
     st = derive_state(days_left, state.cycle_mean_days, cfg)
     conf = compute_confidence(state, now, cfg)
     return Forecast(
