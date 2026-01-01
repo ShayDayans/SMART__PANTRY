@@ -22,6 +22,7 @@ class HabitCreate(BaseModel):
     """Schema for creating a habit"""
     type: HabitType = HabitType.OTHER
     status: HabitStatus = HabitStatus.ACTIVE
+    name: Optional[str] = None
     explanation: Optional[str] = None
     params: Optional[Dict[str, Any]] = None
     effects: Optional[Dict[str, Any]] = None
@@ -33,6 +34,7 @@ class HabitUpdate(BaseModel):
     """Schema for updating a habit"""
     type: Optional[HabitType] = None
     status: Optional[HabitStatus] = None
+    name: Optional[str] = None
     explanation: Optional[str] = None
     params: Optional[Dict[str, Any]] = None
     effects: Optional[Dict[str, Any]] = None
@@ -46,6 +48,7 @@ class HabitResponse(BaseModel):
     user_id: str
     type: HabitType
     status: HabitStatus
+    name: Optional[str] = None
     explanation: Optional[str] = None
     params: Optional[Dict[str, Any]] = None
     effects: Optional[Dict[str, Any]] = None

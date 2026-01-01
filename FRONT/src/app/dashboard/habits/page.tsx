@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation'
 import { useAuthStore } from '@/store/useAuthStore'
 import { DashboardLayout } from '@/components/layouts/DashboardLayout'
 import { api } from '@/lib/api'
-import { Users, ShoppingCart, Calendar, MessageSquare, Send, ChefHat, Sparkles, TrendingUp } from 'lucide-react'
+import { Users, ShoppingCart, Calendar, MessageSquare, Send, ChefHat, Sparkles, TrendingUp, Target, Trash2 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 
 interface UserPreferences {
@@ -24,6 +24,15 @@ interface ChatMessage {
   content: string
   timestamp: Date
   extracted_data?: any
+}
+
+interface Habit {
+  habit_id: string
+  name: string | null
+  explanation: string | null
+  type: string
+  status: string
+  created_at: string
 }
 
 const containerVariants = {
@@ -64,6 +73,8 @@ export default function HabitsPage() {
   const [chatInput, setChatInput] = useState('')
   const [saving, setSaving] = useState(false)
   const [chatLoading, setChatLoading] = useState(false)
+  const [habits, setHabits] = useState<Habit[]>([])
+  const [deletingHabitId, setDeletingHabitId] = useState<string | null>(null)
   const chatEndRef = useRef<HTMLDivElement>(null)
 
   const dietaryOptions = [
@@ -98,6 +109,7 @@ export default function HabitsPage() {
       loadPreferences()
       loadChatHistory()
       loadCategories()
+      loadHabits()
     }
   }, [user])
 
@@ -187,6 +199,39 @@ export default function HabitsPage() {
     }
   }
 
+  const loadHabits = async () => {
+    try {
+      const response = await api.get('/habits')
+      if (response.data) {
+        // Filter to only show habits with names (created via AI assistant)
+        const habitsWithNames = response.data.filter((habit: Habit) => habit.name)
+        setHabits(habitsWithNames)
+      }
+    } catch (error: any) {
+      if (error?.response?.status !== 404) {
+        console.error('Error loading habits:', error)
+      }
+    }
+  }
+
+  const deleteHabit = async (habitId: string) => {
+    if (!confirm('Are you sure you want to delete this habit? This will recalculate predictions for affected products.')) {
+      return
+    }
+
+    setDeletingHabitId(habitId)
+    try {
+      await api.delete(`/habits/${habitId}`)
+      // Reload habits after deletion
+      await loadHabits()
+    } catch (error: any) {
+      console.error('Error deleting habit:', error)
+      alert('Failed to delete habit. Please try again.')
+    } finally {
+      setDeletingHabitId(null)
+    }
+  }
+
   const savePreferences = async () => {
     if (!user) return
     setSaving(true)
@@ -267,6 +312,9 @@ export default function HabitsPage() {
       }
 
       setChatMessages((prev) => [...prev, assistantMessage])
+
+      // Reload habits in case new ones were created
+      await loadHabits()
 
       if (response.data.extracted_data) {
         const extracted = response.data.extracted_data
@@ -501,6 +549,76 @@ export default function HabitsPage() {
                 ))}
               </div>
             </div>
+          </motion.div>
+
+          {/* AI-Created Habits List */}
+          <motion.div
+            variants={itemVariants}
+            className="bg-white/90 backdrop-blur-lg rounded-2xl shadow-xl p-6 lg:col-span-2 border border-white/20 hover:shadow-2xl transition-all duration-300"
+          >
+            <div className="flex items-center mb-4">
+              <div className="p-3 bg-gradient-to-br from-indigo-500 to-purple-500 rounded-xl shadow-lg">
+                <Target className="h-6 w-6 text-white" />
+              </div>
+              <h2 className="text-2xl font-bold text-gray-800 ml-3">AI-Created Habits</h2>
+            </div>
+            <p className="text-sm text-gray-600 mb-4">
+              Habits created via the AI Assistant. Deleting a habit will recalculate predictions for affected products.
+            </p>
+
+            {habits.length === 0 ? (
+              <motion.div
+                initial={{ opacity: 0, scale: 0.9 }}
+                animate={{ opacity: 1, scale: 1 }}
+                className="text-center text-gray-500 py-8"
+              >
+                <Target className="h-12 w-12 mx-auto mb-2 text-gray-400" />
+                <p>No habits added yet. Use the AI Assistant below to create habits!</p>
+              </motion.div>
+            ) : (
+              <div className="space-y-3">
+                <AnimatePresence>
+                  {habits.map((habit) => (
+                    <motion.div
+                      key={habit.habit_id}
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, x: -20 }}
+                      className="flex items-center justify-between p-4 bg-gradient-to-r from-gray-50 to-white rounded-xl border-2 border-gray-200 hover:border-indigo-300 hover:shadow-md transition-all duration-200"
+                    >
+                      <div className="flex-1">
+                        <h3 className="text-lg font-semibold text-gray-800 mb-1">
+                          {habit.name || 'Unnamed Habit'}
+                        </h3>
+                        {habit.explanation && (
+                          <p className="text-sm text-gray-600 line-clamp-2">
+                            {habit.explanation}
+                          </p>
+                        )}
+                      </div>
+                      <motion.button
+                        onClick={() => deleteHabit(habit.habit_id)}
+                        disabled={deletingHabitId === habit.habit_id}
+                        whileHover={{ scale: 1.1 }}
+                        whileTap={{ scale: 0.9 }}
+                        className="ml-4 p-2 text-red-500 hover:text-red-700 hover:bg-red-50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        title="Delete habit"
+                      >
+                        {deletingHabitId === habit.habit_id ? (
+                          <motion.div
+                            animate={{ rotate: 360 }}
+                            transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
+                            className="w-5 h-5 border-2 border-red-500 border-t-transparent rounded-full"
+                          />
+                        ) : (
+                          <Trash2 className="h-5 w-5" />
+                        )}
+                      </motion.button>
+                    </motion.div>
+                  ))}
+                </AnimatePresence>
+              </div>
+            )}
           </motion.div>
 
           {/* Chat with LLM */}

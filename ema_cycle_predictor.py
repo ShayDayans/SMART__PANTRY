@@ -521,6 +521,37 @@ def predict(state: CycleEmaState, now: datetime, multiplier: float, cfg: Predict
     )
 
 
+def predict_after_purchase(state: CycleEmaState, now: datetime, cfg: PredictorConfig) -> Forecast:
+    """
+    Predict immediately after a purchase event.
+    
+    After purchase:
+    - cycle_started_at is ALWAYS set by apply_purchase()
+    - elapsed = 0 (just purchased)
+    - days_left = cycle_mean_days (habits already baked into cycle_mean_days)
+    - state should be FULL (ratio = 1.0)
+    
+    Args:
+        state: Current predictor state (after apply_purchase has been called)
+        now: Current timestamp
+        cfg: Predictor configuration
+    
+    Returns:
+        Forecast object with predicted days left, state, and confidence
+    """
+    # After purchase, cycle_started_at is guaranteed to be set by apply_purchase()
+    days_left = float(state.cycle_mean_days)
+    
+    st = derive_state(days_left, state.cycle_mean_days, cfg)
+    conf = compute_confidence(state, now, cfg)
+    return Forecast(
+        expected_days_left=days_left,
+        predicted_state=st,
+        confidence=float(conf),
+        generated_at=now,
+    )
+
+
 def stamp_last_prediction(state: CycleEmaState, forecast: Forecast) -> CycleEmaState:
     state.last_pred_days_left = float(forecast.expected_days_left)
     return state

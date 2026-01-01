@@ -23,6 +23,8 @@ class HabitService:
             "params": habit.params or {},
             "effects": habit.effects or {},
         }
+        if habit.name:
+            data["name"] = habit.name
         if habit.start_date:
             data["start_date"] = habit.start_date.isoformat()
         if habit.end_date:
@@ -59,6 +61,8 @@ class HabitService:
             data["type"] = habit.type.value
         if habit.status is not None:
             data["status"] = habit.status.value
+        if habit.name is not None:
+            data["name"] = habit.name
         if habit.explanation is not None:
             data["explanation"] = habit.explanation
         if habit.params is not None:
@@ -79,8 +83,20 @@ class HabitService:
 
     def delete_habit(self, habit_id: str, user_id: str) -> bool:
         """Delete a habit"""
+        # First verify the habit exists
+        existing = self.get_habit(habit_id, user_id)
+        if not existing:
+            return False
+        
+        # Delete the habit
+        # Note: Supabase delete may return empty data even on success
+        # So we verify deletion by checking if the habit still exists
         result = self.supabase.table("habits").delete().eq("habit_id", habit_id).eq("user_id", user_id).execute()
-        return len(result.data) > 0
+        
+        # Verify deletion by checking if it still exists
+        # This is more reliable than checking result.data length
+        still_exists = self.get_habit(habit_id, user_id)
+        return still_exists is None
 
     def create_habit_input(self, user_id: str, habit_input: HabitInputCreate) -> Dict[str, Any]:
         """Create a new habit input (chat message)"""

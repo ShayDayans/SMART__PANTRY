@@ -16,7 +16,8 @@ try:
     from ema_cycle_predictor import (
         PredictorConfig, CycleEmaState, Forecast,
         init_state_from_category, apply_purchase, apply_feedback,
-        predict, stamp_last_prediction, map_inventory_log_row_to_event,
+        predict, predict_after_purchase, stamp_last_prediction, map_inventory_log_row_to_event,
+        derive_state, compute_confidence,
         InventoryState as PredInventoryState, InventorySource as PredInventorySource,
         InventoryAction as PredInventoryAction, FeedbackKind
     )
@@ -293,6 +294,48 @@ class PredictorService:
             raise RuntimeError("Predictor modules not available")
         self.repo = SupabasePantryRepository(supabase)
     
+    def _extract_multiplier_from_effects(
+        self, 
+        effects: Dict[str, Any], 
+        product_id: str, 
+        category_id: Optional[str]
+    ) -> float:
+        """
+        Extract multiplier contribution from habit effects for a specific product.
+        
+        Args:
+            effects: Habit effects dict containing:
+                - global_multiplier: multiplier that applies to all products
+                - product_multipliers: {product_id: multiplier}
+                - category_multipliers: {category_id: multiplier}
+            product_id: Product ID to check
+            category_id: Category ID to check (optional)
+        
+        Returns:
+            Combined multiplier for this product (global × product × category)
+        """
+        mult = 1.0
+        pid = str(product_id)
+        cid = str(category_id) if category_id else None
+        
+        # Global multiplier applies to all products
+        gm = effects.get("global_multiplier")
+        if gm is not None:
+            mult *= float(gm)
+        
+        # Product-specific multiplier
+        pm = effects.get("product_multipliers") or {}
+        if pid in pm:
+            mult *= float(pm[pid])
+        
+        # Category-specific multiplier
+        if cid:
+            cm = effects.get("category_multipliers") or {}
+            if cid in cm:
+                mult *= float(cm[cid])
+        
+        return float(max(mult, 1e-6))
+    
     def _make_json_serializable(self, obj: Any) -> Any:
         """Recursively convert UUID objects and other non-serializable types to strings"""
         from uuid import UUID
@@ -390,8 +433,13 @@ class PredictorService:
         if feedback_ev is not None:
             state = apply_feedback(state, feedback_ev, cfg)
         
-        mult = self.repo.get_active_habit_multiplier(user_id, product_id, category_id, now)
-        fc = predict(state, now, mult, cfg)
+        if purchase_ev is not None:
+            # After purchase: habits already baked into cycle_mean_days, no multiplier needed
+            fc = predict_after_purchase(state, now, cfg)
+        else:
+            # For non-purchase events (feedback, etc.), use regular predict with multiplier
+            mult = self.repo.get_active_habit_multiplier(user_id, product_id, category_id, now)
+            fc = predict(state, now, mult, cfg)
         
         state = stamp_last_prediction(state, fc)
         
@@ -418,165 +466,6 @@ class PredictorService:
         )
         
         self.repo.insert_forecast(user_id, product_id, fc, trigger_log_id=row["log_id"])
-    
-    def learn_from_manual_change(self, user_id: str, product_id: str) -> None:
-        """Learn from manual inventory change WITHOUT overwriting the user's state"""
-        try:
-            from uuid import UUID
-            
-            # Ensure user_id and product_id are strings
-            if not isinstance(user_id, str):
-                user_id = str(user_id)
-            if not isinstance(product_id, str):
-                product_id = str(product_id)
-            
-            # Get the latest log entry for this product
-            result = self.repo.supabase.table("inventory_log").select("log_id").eq("user_id", user_id).eq("product_id", product_id).order("occurred_at", desc=True).limit(1).execute()
-            
-            if not result.data or len(result.data) == 0:
-                return
-            
-            log_id = result.data[0]["log_id"]
-            row = self.repo.get_inventory_log_row(log_id)
-            
-            now = datetime.now(timezone.utc)
-            predictor_profile_id, cfg = self._load_cfg_and_profile(user_id)
-            
-            products = dict(self.repo.get_user_inventory_products(user_id))
-            category_id = products.get(product_id)
-            
-            state = self._load_or_init_state(user_id, product_id, predictor_profile_id, cfg, category_id, now)
-            
-            # Process the event to update the predictor model
-            purchase_ev, feedback_ev = map_inventory_log_row_to_event(row)
-            
-            # Get current inventory state before purchase (if purchase event)
-            current_state = None
-            if purchase_ev is not None:
-                try:
-                    inventory_item = self.repo.supabase.table("inventory").select("state").eq(
-                        "user_id", user_id
-                    ).eq("product_id", product_id).limit(1).execute()
-                    if inventory_item.data and len(inventory_item.data) > 0:
-                        state_str = inventory_item.data[0].get("state")
-                        if state_str:
-                            from ema_cycle_predictor import InventoryState as PredInventoryState
-                            current_state = PredInventoryState(state_str)
-                except Exception as e:
-                    print(f"Warning: Could not get current inventory state: {e}")
-            
-            if purchase_ev is not None:
-                state = apply_purchase(state, purchase_ev, cfg, current_state)
-            
-            if feedback_ev is not None:
-                state = apply_feedback(state, feedback_ev, cfg)
-            
-            mult = self.repo.get_active_habit_multiplier(user_id, product_id, category_id, now)
-            fc = predict(state, now, mult, cfg)
-            state = stamp_last_prediction(state, fc)
-            
-            # Convert params to JSON-serializable format (handle UUID objects)
-            params_json = state.to_params_json()
-            params_json = self._make_json_serializable(params_json)
-            
-            # Save the updated predictor state
-            self.repo.upsert_predictor_state(
-                user_id=user_id,
-                product_id=product_id,
-                predictor_profile_id=predictor_profile_id,
-                params=params_json,
-                confidence=fc.confidence,
-                updated_at=now,
-            )
-            
-            # Store the forecast but DON'T overwrite inventory (user just set it manually)
-            self.repo.insert_forecast(user_id, product_id, fc, trigger_log_id=row["log_id"])
-            
-            print(f"Predictor learned from manual change: product={product_id}, forecast={fc.expected_days_left} days")
-            
-        except Exception as e:
-            import traceback
-            print(f"Error in predictor learning from manual change: {e}")
-            print(traceback.format_exc())
-    
-    def learn_from_purchase(self, user_id, product_id, quantity: float = 1.0, log_id = None) -> None:
-        """
-        Learn from a purchase event (e.g., from receipt scanning).
-        This updates the predictor with the purchase quantity and refreshes forecasts.
-        """
-        try:
-            from uuid import UUID
-            
-            # Convert to UUID if needed
-            if not isinstance(user_id, str):
-                user_id = str(user_id)
-            if not isinstance(product_id, str):
-                product_id = str(product_id)
-            
-            now = datetime.now(timezone.utc)
-            predictor_profile_id, cfg = self._load_cfg_and_profile(user_id)
-            
-            products = dict(self.repo.get_user_inventory_products(user_id))
-            category_id = products.get(product_id)
-            
-            state = self._load_or_init_state(user_id, product_id, predictor_profile_id, cfg, category_id, now)
-            
-            # Create a purchase event with the quantity
-            if PREDICTOR_AVAILABLE:
-                from ema_cycle_predictor import PurchaseEvent, InventoryState as PredInventoryState
-                
-                purchase_event = PurchaseEvent(
-                    ts=now,
-                    source=PredInventorySource.RECEIPT,
-                    reliability=1.0
-                )
-                
-                # Get current inventory state before purchase
-                current_state = None
-                try:
-                    inventory_item = self.repo.supabase.table("inventory").select("state").eq(
-                        "user_id", user_id
-                    ).eq("product_id", product_id).limit(1).execute()
-                    if inventory_item.data and len(inventory_item.data) > 0:
-                        state_str = inventory_item.data[0].get("state")
-                        if state_str:
-                            current_state = PredInventoryState(state_str)
-                except Exception as e:
-                    print(f"Warning: Could not get current inventory state: {e}")
-                
-                # Apply the purchase to update the predictor state
-                state = apply_purchase(state, purchase_event, cfg, current_state)
-                
-                # Note: The quantity information is stored in inventory.estimated_qty
-                # The predictor will learn consumption patterns over time through feedback events
-                
-                # Generate new forecast
-                mult = self.repo.get_active_habit_multiplier(user_id, product_id, category_id, now)
-                fc = predict(state, now, mult, cfg)
-                state = stamp_last_prediction(state, fc)
-                
-                # Convert params to JSON-serializable format
-                params_json = state.to_params_json()
-                params_json = self._make_json_serializable(params_json)
-                
-                # Save the updated predictor state
-                self.repo.upsert_predictor_state(
-                    user_id=user_id,
-                    product_id=product_id,
-                    predictor_profile_id=predictor_profile_id,
-                    params=params_json,
-                    confidence=fc.confidence,
-                    updated_at=now,
-                )
-                
-                # Store the forecast
-                trigger_log = str(log_id) if log_id else None
-                self.repo.insert_forecast(user_id, product_id, fc, trigger_log_id=trigger_log)
-                
-                print(f"[+] Predictor learned from purchase: product={product_id}, quantity={quantity}, forecast={fc.expected_days_left} days")
-            
-        except Exception as e:
-            print(f"[!] Error in predictor learning from purchase: {e}")
     
     def update_from_inventory_event(self, user_id: str, product_id: str) -> None:
         """Update predictions for a specific product based on latest inventory log"""
@@ -631,15 +520,26 @@ class PredictorService:
             )
             self.repo.insert_forecast(user_id, product_id, fc, trigger_log_id=None)
     
-    def refresh_products_affected_by_habit(self, user_id: str, habit_effects: Dict[str, Any]) -> None:
+    def refresh_products_affected_by_habit(
+        self, 
+        user_id: str, 
+        habit_effects: Dict[str, Any],
+        is_deletion: bool = False
+    ) -> None:
         """
         Refresh predictions for products affected by a habit's effects.
+        
+        When a habit is created or deleted, this method adjusts both cycle_mean_days
+        and last_pred_days_left to reflect the habit's multiplier effect.
         
         Args:
             user_id: User ID
             habit_effects: Habit effects dict containing:
+                - global_multiplier: multiplier that applies to all products
                 - product_multipliers: {product_id: multiplier}
                 - category_multipliers: {category_id: multiplier}
+            is_deletion: If True, reverts the habit's effect (multiplies).
+                        If False, applies the habit's effect (divides).
         """
         if not habit_effects:
             return
@@ -656,16 +556,20 @@ class PredictorService:
             for product_id in product_multipliers.keys():
                 affected_product_ids.add(str(product_id))
         
-        # Get products affected by category_multipliers
+        # Get products affected by category_multipliers or global_multiplier
         category_multipliers = habit_effects.get("category_multipliers", {})
-        if category_multipliers:
+        global_multiplier = habit_effects.get("global_multiplier")
+        if category_multipliers or global_multiplier is not None:
             # Get all products in user's inventory
             user_products = self.repo.get_user_inventory_products(user_id)
             
-            # Find products in affected categories
+            # Find products in affected categories (or all products if global_multiplier)
             affected_category_ids = set(category_multipliers.keys())
             for product_id, category_id in user_products:
-                if category_id and str(category_id) in affected_category_ids:
+                if global_multiplier is not None:
+                    # Global multiplier affects all products
+                    affected_product_ids.add(str(product_id))
+                elif category_id and str(category_id) in affected_category_ids:
                     affected_product_ids.add(str(product_id))
         
         # Get user's inventory products once
@@ -688,14 +592,55 @@ class PredictorService:
                 
                 state = self._load_or_init_state(user_id, product_id, predictor_profile_id, cfg, category_id, now)
                 
-                # Use last_pred_days_left from state (already in memory, no DB read needed)
-                # This represents the model's last prediction and should be synchronized with inventory.estimated_qty
-                # in normal operation. Using it ensures we apply the multiplier to the correct base value.
-                base_days_left = state.last_pred_days_left if state.last_pred_days_left is not None else None
+                # Extract multiplier from the habit being added/removed
+                habit_mult = self._extract_multiplier_from_effects(
+                    habit_effects, product_id, category_id
+                )
                 
-                mult = self.repo.get_active_habit_multiplier(user_id, product_id, category_id, now)
-                # Use predict() with base_days_left to ensure correct multiplier application
-                fc = predict(state, now, mult, cfg, inventory_days_left=base_days_left)
+                # Adjust cycle_mean_days and last_pred_days_left based on habit creation/deletion
+                if is_deletion:
+                    # Revert: multiply by the deleted habit's multiplier
+                    # This removes that habit's effect, leaving others intact
+                    state.cycle_mean_days = state.cycle_mean_days * habit_mult
+                    if state.last_pred_days_left is not None:
+                        new_days_left = state.last_pred_days_left * habit_mult
+                    else:
+                        # No previous prediction - calculate from adjusted cycle_mean_days
+                        new_days_left = None
+                else:
+                    # Apply: divide by the new habit's multiplier
+                    # This applies the new habit on top of existing ones
+                    state.cycle_mean_days = state.cycle_mean_days / habit_mult
+                    if state.last_pred_days_left is not None:
+                        new_days_left = state.last_pred_days_left / habit_mult
+                    else:
+                        # No previous prediction - calculate from adjusted cycle_mean_days
+                        new_days_left = None
+                
+                # Clamp cycle_mean_days to valid range
+                state.cycle_mean_days = max(cfg.min_cycle_days, min(state.cycle_mean_days, cfg.max_cycle_days))
+                
+                # Create forecast with the new values
+                # If we have a new_days_left value, use it; otherwise calculate from cycle_mean_days
+                if new_days_left is not None:
+                    expected_days_left = float(new_days_left)
+                else:
+                    # Fallback: calculate from adjusted cycle_mean_days
+                    if state.cycle_started_at is not None:
+                        from ema_cycle_predictor import _days_between
+                        elapsed = _days_between(now, state.cycle_started_at)
+                        expected_days_left = float(max(0.0, state.cycle_mean_days - elapsed))
+                    else:
+                        # No active cycle - use cycle_mean_days as initial value
+                        expected_days_left = float(state.cycle_mean_days)
+                
+                fc = Forecast(
+                    expected_days_left=expected_days_left,
+                    predicted_state=derive_state(expected_days_left, state.cycle_mean_days, cfg),
+                    confidence=float(compute_confidence(state, now, cfg)),
+                    generated_at=now,
+                )
+                
                 state = stamp_last_prediction(state, fc)
                 
                 # Convert params to JSON-serializable format
@@ -721,7 +666,8 @@ class PredictorService:
                 self.repo.insert_forecast(user_id, product_id, fc, trigger_log_id=None)
             except Exception as e:
                 import logging
-                logging.error(f"Error refreshing prediction for product {product_id} after habit creation: {e}")
+                action = "deletion" if is_deletion else "creation"
+                logging.error(f"Error refreshing prediction for product {product_id} after habit {action}: {e}", exc_info=True)
                 continue
     
     def weekly_model_update(self, user_id: str, product_id: str) -> None:

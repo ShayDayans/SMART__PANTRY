@@ -84,20 +84,29 @@ Return your response in JSON format with the following structure (ALL fields are
     "notes": "Any additional notes" or null
   },
   "model_insights": {
-    "suggested_adjustments": [
+    "new_habits": [
       {
-        "product_name": "yogurt",
-        "category_name": null,
-        "reason": "User mentioned yogurt is significant part of diet",
-        "suggested_multiplier": 1.2
+        "name": "Short, user-friendly name (e.g., 'Weekly Shopping', 'Vegetarian Diet', 'Sunday Meal Prep')",
+        "type": "DIET" or "HOUSEHOLD" or "SHOPPING_SCHEDULE" or "OTHER",
+        "description": "Detailed explanation of the habit",
+        "effects": {
+          "product_multipliers": {"product_name": multiplier} or {},
+          "category_multipliers": {"category_name": multiplier} or {},
+          "global_multiplier": number or null
+        }
       }
-    ],
-    "new_habits": []
+    ]
   }
 }
 
 IMPORTANT: 
-- suggested_adjustments: Use product_name for specific products, OR category_name for explicit category mentions (mutually exclusive - product_name takes precedence). Only use category_name when user explicitly mentions a category name or clearly refers to a whole category (e.g., "I eat a lot of meat", "we don't consume dairy"). Do NOT infer category adjustments from single product mentions."""
+- new_habits: This is the ONLY way to create habits. When suggesting habits, always include a concise "name" field (2-4 words) that clearly identifies the habit. The name should be user-friendly and descriptive (e.g., "Weekly Shopping", "Vegetarian Diet", "Sunday Meal Prep", "High Protein Intake"). The "description" field should contain more detailed explanation.
+- Use new_habits for ALL habit creation - whether it's a dietary preference, consumption pattern, or any other habit that affects product consumption.
+- effects in new_habits:
+  * product_multipliers: Use product NAMES (e.g., "milk", "bread"), NOT product IDs. Use names from the user's inventory if available (see user_products in context).
+  * category_multipliers: Use category NAMES (e.g., "Dairy", "Bakery"), NOT category IDs. Only use categories that exist in the system (see all_available_categories in context). If a name is not in all_available_categories, it's likely a product, not a category.
+  * The system will automatically convert these names to IDs. If a name doesn't exist, that effect will be skipped.
+  * When in doubt whether something is a product or category, check the all_available_categories list in the context. If it's not there, it's likely a product."""
         
         # Build user context
         context_parts = []

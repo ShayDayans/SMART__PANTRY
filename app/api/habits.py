@@ -77,7 +77,8 @@ def create_habit(
                 predictor_service = PredictorService(supabase)
                 predictor_service.refresh_products_affected_by_habit(
                     str(user_id),
-                    habit.effects
+                    habit.effects,
+                    is_deletion=False
                 )
             except Exception as e:
                 import logging
@@ -107,12 +108,57 @@ def update_habit(
 def delete_habit(
     habit_id: UUID,
     user_id: UUID = Depends(get_current_user_id),
-    service: HabitService = Depends(get_habit_service)
+    service: HabitService = Depends(get_habit_service),
+    supabase: Client = Depends(get_supabase)
 ):
-    """Delete a habit"""
+    """Delete a habit and refresh predictions for affected products"""
+    import logging
+    
+    # Get the habit first to retrieve its effects before deletion
+    habit = service.get_habit(str(habit_id), str(user_id))
+    if not habit:
+        raise HTTPException(status_code=404, detail="Habit not found")
+    
+    # Store effects before deletion
+    habit_effects = habit.get("effects") or {}
+    habit_status = habit.get("status")
+    
+    logging.info(f"Deleting habit {habit_id} (status: {habit_status}, has_effects: {bool(habit_effects)})")
+    
+    # Delete the habit
     success = service.delete_habit(str(habit_id), str(user_id))
     if not success:
-        raise HTTPException(status_code=404, detail="Habit not found")
+        # Verify if it still exists
+        still_exists = service.get_habit(str(habit_id), str(user_id))
+        if still_exists:
+            logging.error(f"Failed to delete habit {habit_id} - habit still exists in database with status: {still_exists.get('status')}")
+            raise HTTPException(status_code=500, detail="Failed to delete habit. The habit may be referenced by other records.")
+        else:
+            # Habit doesn't exist, might have been deleted already
+            raise HTTPException(status_code=404, detail="Habit not found")
+    
+    logging.info(f"Successfully deleted habit {habit_id}")
+    
+    # Refresh predictions for products affected by this habit
+    # This recalculates using current DB state (without the deleted habit)
+    if habit_effects:
+        try:
+            from app.services.predictor_service import PredictorService
+            predictor_service = PredictorService(supabase)
+            
+            logging.info(f"Refreshing predictions for products affected by deleted habit {habit_id}")
+            predictor_service.refresh_products_affected_by_habit(
+                str(user_id),
+                habit_effects,
+                is_deletion=True
+            )
+            logging.info(f"Successfully refreshed predictions after deleting habit {habit_id}")
+        except Exception as e:
+            logging.error(f"Error refreshing predictions after habit deletion: {e}", exc_info=True)
+            # Don't fail the request if prediction refresh fails, but log it for debugging
+    else:
+        logging.info(f"No effects to refresh for habit {habit_id}")
+    
     return None
 
 
@@ -183,14 +229,31 @@ def chat_with_llm(
     try:
         inventory_service = InventoryService(supabase)
         inventory = inventory_service.get_inventory(user_id)
+        
+        # Get all available categories (not just user's inventory)
+        all_categories_result = supabase.table("product_categories").select("category_name").order("category_name").execute()
+        all_categories = [cat["category_name"] for cat in (all_categories_result.data or [])]
+        
+        # Get product names from user's inventory
+        product_names = []
+        if inventory:
+            product_names = [
+                item.get("products", {}).get("product_name") 
+                for item in inventory 
+                if item.get("products", {}).get("product_name")
+            ]
+            product_names = list(set([p for p in product_names if p]))  # Remove duplicates and None
+        
         inventory_summary = {
             "total_items": len(inventory),
-            "categories": list(set([
+            "user_categories": list(set([
                 item.get("products", {}).get("category_name", "Unknown")
                 if isinstance(item.get("products"), dict)
                 else "Unknown"
                 for item in inventory
-            ]))
+            ])),
+            "all_available_categories": all_categories,  # All categories in system
+            "user_products": product_names[:50]  # User's products (limit to avoid token limits)
         }
     except Exception:
         inventory_summary = {}
@@ -238,11 +301,85 @@ def chat_with_llm(
     created_habits = []
     for suggested_habit in suggested_habits:
         try:
+            # Convert product/category names to IDs in effects
+            effects = suggested_habit.get("effects", {})
+            converted_effects = {}
+            
+            # Convert product names to product IDs
+            product_multipliers = effects.get("product_multipliers", {})
+            if product_multipliers:
+                converted_product_multipliers = {}
+                for product_name, multiplier in product_multipliers.items():
+                    # Find product by name
+                    products_result = supabase.table("products").select("product_id").ilike(
+                        "product_name", f"%{product_name}%"
+                    ).limit(1).execute()
+                    
+                    if products_result.data:
+                        product_id = products_result.data[0]["product_id"]
+                        converted_product_multipliers[str(product_id)] = multiplier
+                    else:
+                        import logging
+                        logging.warning(f"Product '{product_name}' not found, skipping from habit effects")
+                
+                if converted_product_multipliers:
+                    converted_effects["product_multipliers"] = converted_product_multipliers
+            
+            # Convert category names to category IDs (with fallback to product lookup)
+            category_multipliers = effects.get("category_multipliers", {})
+            if category_multipliers:
+                converted_category_multipliers = {}
+                converted_product_multipliers_from_category = {}  # For fallback
+                
+                for category_name, multiplier in category_multipliers.items():
+                    # First try to find as category
+                    categories_result = supabase.table("product_categories").select("category_id").ilike(
+                        "category_name", f"%{category_name}%"
+                    ).limit(1).execute()
+                    
+                    if categories_result.data:
+                        category_id = categories_result.data[0]["category_id"]
+                        converted_category_multipliers[str(category_id)] = multiplier
+                    else:
+                        # Fallback: try to find as product
+                        products_result = supabase.table("products").select("product_id").ilike(
+                            "product_name", f"%{category_name}%"
+                        ).limit(1).execute()
+                        
+                        if products_result.data:
+                            product_id = products_result.data[0]["product_id"]
+                            converted_product_multipliers_from_category[str(product_id)] = multiplier
+                            import logging
+                            logging.info(f"Category '{category_name}' not found, but found as product - using product_multiplier instead")
+                        else:
+                            import logging
+                            logging.warning(f"Neither category nor product '{category_name}' found, skipping from habit effects")
+                
+                if converted_category_multipliers:
+                    converted_effects["category_multipliers"] = converted_category_multipliers
+                
+                # Merge any product multipliers from category fallback
+                if converted_product_multipliers_from_category:
+                    if "product_multipliers" not in converted_effects:
+                        converted_effects["product_multipliers"] = {}
+                    converted_effects["product_multipliers"].update(converted_product_multipliers_from_category)
+            
+            # Add global_multiplier if present
+            if effects.get("global_multiplier") is not None:
+                converted_effects["global_multiplier"] = effects["global_multiplier"]
+            
+            # Only create habit if we have valid effects after conversion
+            if not converted_effects:
+                import logging
+                logging.warning(f"Skipping habit '{suggested_habit.get('name')}' - no valid effects after conversion")
+                continue
+            
             habit_create = HabitCreate(
                 type=HabitType(suggested_habit.get("type", "OTHER")),
                 status=HabitStatus.ACTIVE,
+                name=suggested_habit.get("name"),
                 explanation=suggested_habit.get("description", ""),
-                effects=suggested_habit.get("effects", {}),
+                effects=converted_effects,  # Use converted effects
                 params={}
             )
             created_habit = service.create_habit(str(user_id), habit_create)
@@ -253,88 +390,16 @@ def chat_with_llm(
                 try:
                     predictor_service.refresh_products_affected_by_habit(
                         str(user_id),
-                        habit_create.effects
+                        habit_create.effects,
+                        is_deletion=False
                     )
                 except Exception as e:
                     import logging
                     logging.error(f"Error refreshing predictions after suggested habit creation: {e}")
         except Exception as e:
+            import logging
+            logging.error(f"Error creating suggested habit: {e}", exc_info=True)
             pass  # Log error but don't fail
-    
-    # Apply model insights to update predictor
-    try:
-        # Process model insights suggested adjustments
-        if model_insights.get("suggested_adjustments"):
-            for adjustment in model_insights["suggested_adjustments"]:
-                product_name = adjustment.get("product_name")
-                category_name = adjustment.get("category_name")
-                suggested_multiplier = adjustment.get("suggested_multiplier")
-                
-                if not suggested_multiplier:
-                    continue
-                
-                effects = {}
-                habit_explanation = ""
-                
-                # Priority: product_name takes precedence (more specific than category)
-                if product_name:
-                    # Find product by name
-                    products_result = supabase.table("products").select("product_id, category_id").ilike(
-                        "product_name", f"%{product_name}%"
-                    ).limit(1).execute()
-                    
-                    if products_result.data:
-                        product_id = products_result.data[0]["product_id"]
-                        effects = {
-                            "product_multipliers": {
-                                str(product_id): suggested_multiplier
-                            }
-                        }
-                        habit_explanation = f"AI-suggested adjustment for {product_name}: {adjustment.get('reason', '')}"
-                
-                elif category_name:
-                    # Find category by name
-                    categories_result = supabase.table("product_categories").select("category_id").ilike(
-                        "category_name", f"%{category_name}%"
-                    ).limit(1).execute()
-                    
-                    if categories_result.data:
-                        category_id = categories_result.data[0]["category_id"]
-                        effects = {
-                            "category_multipliers": {
-                                str(category_id): suggested_multiplier
-                            }
-                        }
-                        habit_explanation = f"AI-suggested adjustment for {category_name} category: {adjustment.get('reason', '')}"
-                
-                # Create habit if we have effects
-                if effects:
-                    habit_create = HabitCreate(
-                        type=HabitType.OTHER,
-                        status=HabitStatus.ACTIVE,
-                        explanation=habit_explanation,
-                        effects=effects,
-                        params={}
-                    )
-                    try:
-                        created_habit = service.create_habit(str(user_id), habit_create)
-                        created_habits.append(created_habit)
-                        
-                        # Refresh predictions for products affected by this habit
-                        try:
-                            predictor_service.refresh_products_affected_by_habit(
-                                str(user_id),
-                                effects
-                            )
-                        except Exception as e:
-                            import logging
-                            logging.error(f"Error refreshing predictions after model insight habit creation: {e}")
-                    except Exception as e:
-                        import logging
-                        logging.error(f"Error creating habit from model insight: {e}")
-    except Exception as e:
-        import logging
-        logging.error(f"Error applying model insights: {e}")
     
     return ChatResponse(
         response=gpt_response.get("response", "I've updated your preferences."),
