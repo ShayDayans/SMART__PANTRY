@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation'
 import { useAuthStore } from '@/store/useAuthStore'
 import { DashboardLayout } from '@/components/layouts/DashboardLayout'
 import { api } from '@/lib/api'
-import { Package, Trash2, RefreshCw, Plus, TrendingUp, Clock, Search, Filter, X, Edit2, Check, AlertCircle } from 'lucide-react'
+import { Package, Trash2, RefreshCw, Plus, TrendingUp, Clock, Search, Filter, X, Edit2, Check, AlertCircle, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react'
 
 interface InventoryItem {
   product_id: string
@@ -14,6 +14,7 @@ interface InventoryItem {
   estimated_qty: number | null
   confidence: number
   displayed_name: string | null
+  last_updated_at?: string
   products?: {
     product_id?: string
     product_name?: string
@@ -145,6 +146,8 @@ export default function PantryPage() {
   const [selectedCategory, setSelectedCategory] = useState<string>('')
   const [selectedState, setSelectedState] = useState<string>('')
   const [searchQuery, setSearchQuery] = useState<string>('')
+  const [sortBy, setSortBy] = useState<string>('stock_level')
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc')
   const [editingCategoryFor, setEditingCategoryFor] = useState<string | null>(null)
   const [selectedCategoryForProduct, setSelectedCategoryForProduct] = useState<{ [key: string]: string }>({})
   
@@ -170,7 +173,7 @@ export default function PantryPage() {
 
   useEffect(() => {
     filterInventory()
-  }, [selectedCategory, selectedState, searchQuery, allInventory])
+  }, [selectedCategory, selectedState, searchQuery, allInventory, sortBy, sortOrder])
 
   // Debug: log when filters change
   useEffect(() => {
@@ -189,6 +192,65 @@ export default function PantryPage() {
     } catch (error) {
       console.error('Error loading categories:', error)
     }
+  }
+
+  const sortInventory = (items: InventoryItem[], sortBy: string, order: 'asc' | 'desc'): InventoryItem[] => {
+    const sorted = [...items]
+    
+    switch (sortBy) {
+      case 'estimated_qty':
+        sorted.sort((a, b) => {
+          const aQty = a.estimated_qty ?? 0
+          const bQty = b.estimated_qty ?? 0
+          return order === 'asc' ? aQty - bQty : bQty - aQty
+        })
+        break
+      
+      case 'last_updated':
+        sorted.sort((a, b) => {
+          // Handle missing dates - put them at the end
+          const aDate = a.last_updated_at ? new Date(a.last_updated_at).getTime() : 0
+          const bDate = b.last_updated_at ? new Date(b.last_updated_at).getTime() : 0
+          
+          // If one has no date, put it at the end
+          if (aDate === 0 && bDate !== 0) return 1
+          if (aDate !== 0 && bDate === 0) return -1
+          
+          return order === 'asc' ? aDate - bDate : bDate - aDate
+        })
+        break
+      
+      case 'name':
+        sorted.sort((a, b) => {
+          const aName = (a.displayed_name || a.product_name || '').toLowerCase()
+          const bName = (b.displayed_name || b.product_name || '').toLowerCase()
+          return order === 'asc' 
+            ? aName.localeCompare(bName)
+            : bName.localeCompare(aName)
+        })
+        break
+      
+      case 'stock_level':
+      default:
+        // Default sort: items running out first, then by stock percentage
+        sorted.sort((a, b) => {
+          const aPercentage = a.prediction?.stock_percentage || 0
+          const bPercentage = b.prediction?.stock_percentage || 0
+          const aDaysLeft = a.prediction?.expected_days_left || 999
+          const bDaysLeft = b.prediction?.expected_days_left || 999
+          
+          // Items running out (< 3 days) should be first
+          if (aDaysLeft < 3 && bDaysLeft >= 3) return order === 'asc' ? -1 : 1
+          if (aDaysLeft >= 3 && bDaysLeft < 3) return order === 'asc' ? 1 : -1
+          
+          return order === 'asc' 
+            ? aPercentage - bPercentage
+            : bPercentage - aPercentage
+        })
+        break
+    }
+    
+    return sorted
   }
 
   const filterInventory = () => {
@@ -253,6 +315,9 @@ export default function PantryPage() {
         return displayedName.includes(query) || productName.includes(query)
       })
     }
+
+    // Apply sorting
+    filtered = sortInventory(filtered, sortBy, sortOrder)
 
     setInventory(filtered)
   }
@@ -487,20 +552,6 @@ export default function PantryPage() {
     return []
   }
 
-  const sortedInventory = [...inventory].sort((a, b) => {
-    // Sort by stock level: EMPTY -> LOW -> MEDIUM -> FULL
-    const aPercentage = a.prediction?.stock_percentage || 0
-    const bPercentage = b.prediction?.stock_percentage || 0
-    
-    // Items running out (< 3 days) should be first
-    const aDaysLeft = a.prediction?.expected_days_left || 999
-    const bDaysLeft = b.prediction?.expected_days_left || 999
-    
-    if (aDaysLeft < 3 && bDaysLeft >= 3) return -1
-    if (aDaysLeft >= 3 && bDaysLeft < 3) return 1
-    
-    return aPercentage - bPercentage // Sort by lowest stock first
-  })
 
   if (loading || !user) {
     return (
@@ -554,7 +605,7 @@ export default function PantryPage() {
             <h2 className="text-lg font-semibold text-gray-900">Filters</h2>
           </div>
           
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
             {/* Search */}
             <div className="relative">
               <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-5 w-5 text-gray-400" />
@@ -601,6 +652,31 @@ export default function PantryPage() {
               <option value="LOW">Low (Orange)</option>
               <option value="EMPTY">Empty (Red)</option>
             </select>
+
+            {/* Sort By */}
+            <div className="flex gap-2">
+              <select
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value)}
+                className="flex-1 px-4 py-2 border-2 border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              >
+                <option value="stock_level">Stock Level</option>
+                <option value="estimated_qty">Estimated Qty</option>
+                <option value="last_updated">Last Updated</option>
+                <option value="name">Name</option>
+              </select>
+              <button
+                onClick={() => setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')}
+                className="px-3 py-2 border-2 border-gray-300 rounded-xl hover:bg-gray-50 transition-colors flex items-center justify-center"
+                title={sortOrder === 'asc' ? 'Ascending' : 'Descending'}
+              >
+                {sortOrder === 'asc' ? (
+                  <ArrowUp className="h-4 w-4 text-gray-600" />
+                ) : (
+                  <ArrowDown className="h-4 w-4 text-gray-600" />
+                )}
+              </button>
+            </div>
           </div>
 
           {/* Active Filters Display */}
@@ -638,7 +714,7 @@ export default function PantryPage() {
           <div className="flex justify-center py-12">
             <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
           </div>
-        ) : sortedInventory.length === 0 ? (
+        ) : inventory.length === 0 ? (
           <div className="bg-white shadow rounded-xl p-12 text-center border border-gray-200">
             <Package className="h-16 w-16 text-gray-400 mx-auto mb-4" />
             <h2 className="text-xl font-semibold text-gray-900 mb-2">Your pantry is empty</h2>
@@ -655,7 +731,7 @@ export default function PantryPage() {
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {sortedInventory.map((item) => {
+            {inventory.map((item) => {
               const predictedState = item.prediction?.predicted_state || item.state
               const percentage = item.prediction?.stock_percentage || 0
               const daysLeft = item.prediction?.expected_days_left || 0
