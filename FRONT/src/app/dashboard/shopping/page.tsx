@@ -12,9 +12,7 @@ import {
   ChefHat, 
   Calendar, 
   Clock, 
-  Edit2, 
   Trash2,
-  Check,
   X,
   Package
 } from 'lucide-react'
@@ -59,7 +57,6 @@ export default function ShoppingPage() {
   const [shoppingLists, setShoppingLists] = useState<ShoppingList[]>([])
   const [pastLists, setPastLists] = useState<ShoppingList[]>([])
   const [activeList, setActiveList] = useState<ShoppingList | null>(null)
-  const [showFrequentItems, setShowFrequentItems] = useState(false)
   const [showAllProducts, setShowAllProducts] = useState(false)
   const [loadingLists, setLoadingLists] = useState(true)
   const [allProducts, setAllProducts] = useState<Product[]>([])
@@ -71,10 +68,9 @@ export default function ShoppingPage() {
   const [newProductName, setNewProductName] = useState('')
   const [newProductCategory, setNewProductCategory] = useState<string>('')
   const [creatingProduct, setCreatingProduct] = useState(false)
-  const [editingItem, setEditingItem] = useState<string | null>(null)
-  const [editQty, setEditQty] = useState<number>(1)
   const [notification, setNotification] = useState<string | null>(null)
   const [recentlyAddedItemId, setRecentlyAddedItemId] = useState<string | null>(null)
+  const [selectedPastList, setSelectedPastList] = useState<ShoppingList | null>(null)
 
   useEffect(() => {
     if (!loading && !user) {
@@ -124,7 +120,17 @@ export default function ShoppingPage() {
                 setActiveList(updatedActiveList)
               }
             } else {
-              setActiveList(updatedActiveList)
+              // Preserve existing items if they exist, otherwise update
+              if (activeList.shopping_list_items && activeList.shopping_list_items.length > 0) {
+                // Keep the existing activeList with its items
+                setActiveList({
+                  ...updatedActiveList,
+                  shopping_list_items: activeList.shopping_list_items
+                })
+              } else {
+                // No items in current activeList, update it
+                setActiveList(updatedActiveList)
+              }
             }
           } else {
             // If current active list not found, use first one
@@ -147,7 +153,28 @@ export default function ShoppingPage() {
   const loadPastLists = async () => {
     try {
       const response = await api.get(`/shopping-lists?status=COMPLETED`)
-      setPastLists(response.data)
+      const lists = response.data || []
+      
+      // Load items for each past list
+      const listsWithItems = await Promise.all(
+        lists.map(async (list: ShoppingList) => {
+          try {
+            const itemsResponse = await api.get(`/shopping-lists/${list.shopping_list_id}/items`)
+            return {
+              ...list,
+              shopping_list_items: itemsResponse.data || []
+            }
+          } catch (error) {
+            console.error(`Error loading items for list ${list.shopping_list_id}:`, error)
+            return {
+              ...list,
+              shopping_list_items: []
+            }
+          }
+        })
+      )
+      
+      setPastLists(listsWithItems)
     } catch (error) {
       console.error('Error loading past lists:', error)
     }
@@ -196,13 +223,113 @@ export default function ShoppingPage() {
       const newList = response.data
       
       if (includeFrequent) {
-        setShowFrequentItems(true)
+        // Load products with LOW/EMPTY states from inventory
+        try {
+          console.log('Loading frequent items (LOW/EMPTY)...')
+          
+          // Fetch LOW state items
+          const lowResponse = await api.get('/inventory?state=LOW')
+          const lowItems = lowResponse.data || []
+          console.log(`Found ${lowItems.length} LOW items:`, lowItems)
+          
+          // Fetch EMPTY state items
+          const emptyResponse = await api.get('/inventory?state=EMPTY')
+          const emptyItems = emptyResponse.data || []
+          console.log(`Found ${emptyItems.length} EMPTY items:`, emptyItems)
+          
+          // Combine and add to list
+          const frequentProducts = [...lowItems, ...emptyItems]
+          console.log(`Total frequent products to add: ${frequentProducts.length}`)
+          
+          let addedCount = 0
+          for (const item of frequentProducts) {
+            // Check both direct product_id and nested products.product_id
+            const productId = item.product_id || (item.products && item.products.product_id)
+            
+            if (productId) {
+              try {
+                console.log(`Adding product ${productId} to shopping list...`)
+                await api.post(`/shopping-lists/${newList.shopping_list_id}/items`, {
+                  product_id: productId,
+                  status: 'PLANNED',
+                  added_by: 'SYSTEM',
+                })
+                addedCount++
+                console.log(`✓ Added product ${productId}`)
+              } catch (error: any) {
+                console.error(`Error adding frequent item ${productId}:`, error)
+                console.error('Error details:', error.response?.data)
+              }
+            } else {
+              console.warn('Item missing product_id:', item)
+            }
+          }
+          
+          console.log(`Successfully added ${addedCount} items to shopping list`)
+          
+          // Set activeList first with the new list (before items are added)
+          setActiveList(newList)
+          
+          // Explicitly reload the active list with items after adding
+          if (newList.shopping_list_id) {
+            try {
+              // Load items separately to get prediction data
+              const itemsResponse = await api.get(`/shopping-lists/${newList.shopping_list_id}/items`)
+              const items = itemsResponse.data || []
+              
+              // Update activeList with items
+              setActiveList((prevList) => {
+                if (prevList && prevList.shopping_list_id === newList.shopping_list_id) {
+                  return {
+                    ...prevList,
+                    shopping_list_items: items
+                  }
+                }
+                return {
+                  ...newList,
+                  shopping_list_items: items
+                }
+              })
+              
+              console.log(`✓ Reloaded active list with ${items.length} items`)
+            } catch (error) {
+              console.error('Error reloading active list:', error)
+            }
+          }
+          
+          // Also reload shopping lists to update the sidebar (but don't overwrite activeList)
+          // We'll reload without updating activeList since we just set it above
+          try {
+            const response = await api.get(`/shopping-lists?status=ACTIVE`)
+            const lists = response.data || []
+            setShoppingLists(lists)
+            // Don't update activeList here - we already have it with items
+          } catch (error) {
+            console.error('Error reloading shopping lists:', error)
+          }
+          
+          if (addedCount > 0) {
+            setNotification(`✓ Added ${addedCount} frequent items to your list`)
+            setTimeout(() => setNotification(null), 3000)
+          } else {
+            setNotification('⚠️ No frequent items found (no LOW/EMPTY products in pantry)')
+            setTimeout(() => setNotification(null), 5000)
+          }
+        } catch (error: any) {
+          console.error('Error loading frequent items:', error)
+          console.error('Error details:', error.response?.data)
+          setNotification(`✗ Error loading frequent items: ${error.message || 'Unknown error'}`)
+          setTimeout(() => setNotification(null), 5000)
+          // Still set the active list even if adding items failed
+          setActiveList(newList)
+          await loadShoppingLists()
+        }
       } else {
+        // Show all products modal for manual selection
+        setActiveList(newList)
+        await loadShoppingLists()
         setShowAllProducts(true)
       }
-      
-      await loadShoppingLists()
-      setActiveList(newList)
     } catch (error) {
       console.error('Error creating shopping list:', error)
     }
@@ -262,9 +389,7 @@ export default function ShoppingPage() {
         }, 200)
       }
       
-      // Close modal if open
-      setShowFrequentItems(false)
-      setShowAllProducts(false)
+      // Don't close modal automatically - let user close it explicitly
       setNewItemText('')
     } catch (error: any) {
       console.error('Error adding item:', error)
@@ -274,17 +399,6 @@ export default function ShoppingPage() {
     }
   }
 
-  const updateItemQty = async (itemId: string, qty: number) => {
-    try {
-      await api.put(`/shopping-lists/items/${itemId}`, {
-        user_qty_override: qty,
-      })
-      await loadShoppingLists()
-      setEditingItem(null)
-    } catch (error) {
-      console.error('Error updating item:', error)
-    }
-  }
 
   const deleteItem = async (itemId: string) => {
     try {
@@ -471,18 +585,15 @@ export default function ShoppingPage() {
           </motion.div>
         )}
 
-        {/* Frequent/All Products Selection Modal */}
+        {/* All Products Selection Modal */}
         <AnimatePresence>
-          {(showFrequentItems || showAllProducts) && activeList && (
+          {showAllProducts && activeList && (
             <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
-              onClick={() => {
-                setShowFrequentItems(false)
-                setShowAllProducts(false)
-              }}
+              // Removed onClick handler - modal only closes via explicit button clicks
             >
               <motion.div
                 initial={{ scale: 0.9, opacity: 0 }}
@@ -493,11 +604,10 @@ export default function ShoppingPage() {
               >
                 <div className="flex justify-between items-center mb-4">
                   <h3 className="text-2xl font-bold text-gray-900">
-                    {showFrequentItems ? 'Frequent Items' : 'All Products'}
+                    All Products
                   </h3>
                   <button
                     onClick={() => {
-                      setShowFrequentItems(false)
                       setShowAllProducts(false)
                     }}
                     className="text-gray-500 hover:text-gray-700"
@@ -511,9 +621,10 @@ export default function ShoppingPage() {
                     <div
                       key={product.product_id}
                       className="flex items-center justify-between p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors cursor-pointer"
-                      onClick={async () => {
+                      onClick={async (e) => {
+                        e.stopPropagation()
                         await addItemToList(product.product_id, undefined, 1)
-                        // Modal will close automatically in addItemToList, showing the shopping list
+                        // Keep modal open so user can add more items
                       }}
                     >
                       <div className="flex-1">
@@ -524,7 +635,7 @@ export default function ShoppingPage() {
                         onClick={async (e) => {
                           e.stopPropagation()
                           await addItemToList(product.product_id, undefined, 1)
-                          // Modal will close automatically in addItemToList, showing the shopping list
+                          // Keep modal open so user can add more items
                         }}
                         className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 flex items-center gap-2"
                       >
@@ -537,7 +648,6 @@ export default function ShoppingPage() {
 
                 <button
                   onClick={() => {
-                    setShowFrequentItems(false)
                     setShowAllProducts(false)
                   }}
                   className="w-full bg-gray-200 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-300"
@@ -647,6 +757,70 @@ export default function ShoppingPage() {
           )}
         </AnimatePresence>
 
+        {/* Past List View Modal */}
+        <AnimatePresence>
+          {selectedPastList && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+              onClick={() => setSelectedPastList(null)}
+            >
+              <motion.div
+                initial={{ scale: 0.9, opacity: 0 }}
+                animate={{ scale: 1, opacity: 1 }}
+                exit={{ scale: 0.9, opacity: 0 }}
+                className="bg-white rounded-2xl p-6 max-w-2xl w-full max-h-[80vh] overflow-y-auto"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="flex justify-between items-center mb-4">
+                  <h3 className="text-2xl font-bold text-gray-900">{selectedPastList.title}</h3>
+                  <button
+                    onClick={() => setSelectedPastList(null)}
+                    className="text-gray-500 hover:text-gray-700"
+                  >
+                    <X className="h-6 w-6" />
+                  </button>
+                </div>
+                
+                <p className="text-sm text-gray-500 mb-4">
+                  {new Date(selectedPastList.created_at).toLocaleDateString()}
+                </p>
+                
+                <div className="space-y-2">
+                  {selectedPastList.shopping_list_items?.filter(item => item.status === 'BOUGHT').length === 0 ? (
+                    <p className="text-gray-500 text-center py-8">No items were bought in this list</p>
+                  ) : (
+                    selectedPastList.shopping_list_items
+                      ?.filter(item => item.status === 'BOUGHT')
+                      .map((item) => (
+                        <div
+                          key={item.shopping_list_item_id}
+                          className="p-3 bg-gray-50 rounded-lg"
+                        >
+                          <p className="font-medium text-gray-900">
+                            {item.products?.product_name || item.free_text_name}
+                          </p>
+                          {item.products?.category_name && (
+                            <p className="text-sm text-gray-500">{item.products.category_name}</p>
+                          )}
+                        </div>
+                      ))
+                  )}
+                </div>
+                
+                <button
+                  onClick={() => setSelectedPastList(null)}
+                  className="w-full mt-4 bg-gray-200 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-300"
+                >
+                  Close
+                </button>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
         {/* Active Shopping List */}
         {activeList && (
           <div className="grid lg:grid-cols-3 gap-6">
@@ -685,9 +859,13 @@ export default function ShoppingPage() {
                             setShowProductSuggestions(true)
                           }
                         }}
-                        onBlur={() => {
-                          // Delay hiding to allow clicks on suggestions
-                          setTimeout(() => setShowProductSuggestions(false), 200)
+                        onBlur={(e) => {
+                          // Only hide if focus is moving outside the input and suggestions area
+                          // Check if the related target is not within the suggestions dropdown
+                          const relatedTarget = e.relatedTarget as HTMLElement
+                          if (relatedTarget && !relatedTarget.closest('.product-suggestions-container')) {
+                            setTimeout(() => setShowProductSuggestions(false), 200)
+                          }
                         }}
                         onKeyDown={(e) => {
                           if (e.key === 'Enter') {
@@ -709,7 +887,7 @@ export default function ShoppingPage() {
                       
                       {/* Product Suggestions Dropdown */}
                       {showProductSuggestions && filteredProducts.length > 0 && (
-                        <div className="absolute z-10 w-full mt-1 bg-white border-2 border-gray-200 rounded-xl shadow-lg max-h-60 overflow-y-auto">
+                        <div className="product-suggestions-container absolute z-10 w-full mt-1 bg-white border-2 border-gray-200 rounded-xl shadow-lg max-h-60 overflow-y-auto">
                           {filteredProducts.map((product) => (
                             <div
                               key={product.product_id}
@@ -727,7 +905,7 @@ export default function ShoppingPage() {
                       
                       {/* Create New Product Option */}
                       {showProductSuggestions && newItemText.trim() && filteredProducts.length === 0 && (
-                        <div className="absolute z-10 w-full mt-1 bg-white border-2 border-gray-200 rounded-xl shadow-lg">
+                        <div className="product-suggestions-container absolute z-10 w-full mt-1 bg-white border-2 border-gray-200 rounded-xl shadow-lg">
                           <div
                             onClick={() => {
                               setNewProductName(newItemText.trim())
@@ -823,50 +1001,12 @@ export default function ShoppingPage() {
                         </div>
 
                         <div className="flex items-center gap-3">
-                          {editingItem === item.shopping_list_item_id ? (
-                            <>
-                              <input
-                                type="number"
-                                value={editQty}
-                                onChange={(e) => setEditQty(Number(e.target.value))}
-                                className="w-20 px-3 py-2 border-2 border-blue-500 rounded-lg text-center text-gray-900"
-                                min="1"
-                              />
-                              <button
-                                onClick={() => updateItemQty(item.shopping_list_item_id, editQty)}
-                                className="text-green-600 hover:text-green-700"
-                              >
-                                <Check className="h-5 w-5" />
-                              </button>
-                              <button
-                                onClick={() => setEditingItem(null)}
-                                className="text-red-600 hover:text-red-700"
-                              >
-                                <X className="h-5 w-5" />
-                              </button>
-                            </>
-                          ) : (
-                            <>
-                              <span className="text-sm font-medium text-gray-700 min-w-[60px] text-center">
-                                {item.user_qty_override || item.recommended_qty || 1} {item.unit || 'unit'}
-                              </span>
-                              <button
-                                onClick={() => {
-                                  setEditingItem(item.shopping_list_item_id)
-                                  setEditQty(item.user_qty_override || item.recommended_qty || 1)
-                                }}
-                                className="text-blue-600 hover:text-blue-700"
-                              >
-                                <Edit2 className="h-5 w-5" />
-                              </button>
-                              <button
-                                onClick={() => deleteItem(item.shopping_list_item_id)}
-                                className="text-red-600 hover:text-red-700"
-                              >
-                                <Trash2 className="h-5 w-5" />
-                              </button>
-                            </>
-                          )}
+                          <button
+                            onClick={() => deleteItem(item.shopping_list_item_id)}
+                            className="text-red-600 hover:text-red-700"
+                          >
+                            <Trash2 className="h-5 w-5" />
+                          </button>
                         </div>
                       </motion.div>
                     ))
@@ -891,17 +1031,22 @@ export default function ShoppingPage() {
                   {pastLists.length === 0 ? (
                     <p className="text-gray-500 text-sm text-center py-8">No past lists</p>
                   ) : (
-                    pastLists.map((list) => (
-                      <div
-                        key={list.shopping_list_id}
-                        className="p-3 bg-gray-50 rounded-lg hover:bg-gray-100 cursor-pointer transition-colors"
-                      >
-                        <p className="font-medium text-gray-900">{list.title}</p>
-                        <p className="text-sm text-gray-500">
-                          {list.shopping_list_items?.length || 0} items • {new Date(list.created_at).toLocaleDateString()}
-                        </p>
-                      </div>
-                    ))
+                    pastLists.map((list) => {
+                      // Count only BOUGHT items
+                      const boughtItems = list.shopping_list_items?.filter(item => item.status === 'BOUGHT') || []
+                      return (
+                        <div
+                          key={list.shopping_list_id}
+                          onClick={() => setSelectedPastList(list)}
+                          className="p-3 bg-gray-50 rounded-lg hover:bg-gray-100 cursor-pointer transition-colors"
+                        >
+                          <p className="font-medium text-gray-900">{list.title}</p>
+                          <p className="text-sm text-gray-500">
+                            {boughtItems.length} items • {new Date(list.created_at).toLocaleDateString()}
+                          </p>
+                        </div>
+                      )
+                    })
                   )}
                 </div>
               </motion.div>

@@ -398,12 +398,6 @@ export default function ShoppingActivePage() {
                               )}
                             </div>
 
-                            {/* Quantity */}
-                            <div className="flex items-center gap-2">
-                              <span className="text-lg font-medium text-gray-900 px-3 py-1 bg-gray-100 rounded-lg">
-                                {item.user_qty_override || item.recommended_qty || 1} {item.unit || 'unit'}
-                              </span>
-                            </div>
                           </div>
 
                           {/* Model Prediction - Simple Display */}
