@@ -342,7 +342,9 @@ export default function PantryPage() {
       const inventoryWithPredictions = inventoryData.map((item: InventoryItem) => {
         // Use state from inventory table (updated by predictor)
         const predictedState = item.state !== 'UNKNOWN' ? item.state : 'MEDIUM'
-        const daysLeft = item.estimated_qty || 0
+        // In loadInventory function, change line 345:
+        // In loadInventory function, change line 345:
+        const daysLeft = Math.ceil(item.estimated_qty || 0)
         
         // Debug: log category_id for each item
         if (item.products?.category_id) {

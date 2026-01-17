@@ -401,11 +401,51 @@ export default function ShoppingPage() {
 
 
   const deleteItem = async (itemId: string) => {
+    // Store original items for potential revert
+    let originalItems: ShoppingListItem[] = []
+    let listId: string | null = null
+
+    // Optimistic update: immediately remove item from UI using functional update
+    setActiveList((prevList) => {
+      if (!prevList) {
+        console.log('[DELETE] No active list')
+        return prevList
+      }
+
+      originalItems = [...(prevList.shopping_list_items || [])]
+      listId = prevList.shopping_list_id
+      const updatedItems = originalItems.filter(item => item.shopping_list_item_id !== itemId)
+      
+      console.log('[DELETE] Removing item:', itemId)
+      console.log('[DELETE] Original items count:', originalItems.length)
+      console.log('[DELETE] Updated items count:', updatedItems.length)
+
+      // Create a completely new object to ensure React detects the change
+      return {
+        ...prevList,
+        shopping_list_items: [...updatedItems] // Ensure new array reference
+      }
+    })
+
     try {
       await api.delete(`/shopping-lists/items/${itemId}`)
-      await loadShoppingLists()
+      console.log('[DELETE] Successfully deleted item from server')
+      // Success - item is already removed from UI
     } catch (error) {
       console.error('Error deleting item:', error)
+      // Revert optimistic update on failure using functional update
+      setActiveList((currentList) => {
+        if (!currentList || !listId || currentList.shopping_list_id !== listId) {
+          return currentList
+        }
+        console.log('[DELETE] Reverting - restoring original items')
+        return {
+          ...currentList,
+          shopping_list_items: [...originalItems] // Ensure new array reference
+        }
+      })
+      setNotification('❌ Failed to delete item')
+      setTimeout(() => setNotification(null), 2000)
     }
   }
 
@@ -572,7 +612,7 @@ export default function ShoppingPage() {
                 className="bg-blue-600 text-white px-8 py-3 rounded-xl hover:bg-blue-700 flex items-center justify-center gap-2 transition-all shadow-lg hover:shadow-xl"
               >
                 <Clock className="h-5 w-5" />
-                Frequent Items (Weekly)
+                Low Stock Items
               </button>
               <button
                 onClick={() => createNewList(false)}
@@ -956,35 +996,37 @@ export default function ShoppingPage() {
                       <p className="text-gray-500">Your list is empty</p>
                     </div>
                   ) : (
-                    // Sort items: by priority (desc) then created_at (asc)
-                    [...activeList.shopping_list_items]
-                      .sort((a, b) => {
-                        // Sort by priority (higher first, nulls last)
-                        const priorityA = a.priority ?? -1
-                        const priorityB = b.priority ?? -1
-                        if (priorityA !== priorityB) {
-                          return priorityB - priorityA
-                        }
-                        // Then by created_at (older first)
-                        const dateA = new Date(a.created_at || 0).getTime()
-                        const dateB = new Date(b.created_at || 0).getTime()
-                        return dateA - dateB
-                      })
-                      .map((item) => (
-                      <motion.div
-                        key={item.shopping_list_item_id}
-                        id={`item-${item.shopping_list_item_id}`}
-                        initial={{ opacity: 0, x: -20 }}
-                        animate={{ 
-                          opacity: 1, 
-                          x: 0,
-                          backgroundColor: recentlyAddedItemId === item.shopping_list_item_id 
-                            ? 'rgb(220 252 231)' // green-100
-                            : 'rgb(249 250 251)' // gray-50
-                        }}
-                        transition={{
-                          backgroundColor: { duration: 0.3 }
-                        }}
+                    <AnimatePresence mode="popLayout">
+                      {/* Sort items: by priority (desc) then created_at (asc) */}
+                      {[...activeList.shopping_list_items]
+                        .sort((a, b) => {
+                          // Sort by priority (higher first, nulls last)
+                          const priorityA = a.priority ?? -1
+                          const priorityB = b.priority ?? -1
+                          if (priorityA !== priorityB) {
+                            return priorityB - priorityA
+                          }
+                          // Then by created_at (older first)
+                          const dateA = new Date(a.created_at || 0).getTime()
+                          const dateB = new Date(b.created_at || 0).getTime()
+                          return dateA - dateB
+                        })
+                        .map((item) => (
+                        <motion.div
+                          key={item.shopping_list_item_id}
+                          id={`item-${item.shopping_list_item_id}`}
+                          initial={{ opacity: 0, x: -20 }}
+                          animate={{ 
+                            opacity: 1, 
+                            x: 0,
+                            backgroundColor: recentlyAddedItemId === item.shopping_list_item_id 
+                              ? 'rgb(220 252 231)' // green-100
+                              : 'rgb(249 250 251)' // gray-50
+                          }}
+                          exit={{ opacity: 0, x: 20, height: 0 }}
+                          transition={{
+                            backgroundColor: { duration: 0.3 }
+                          }}
                         className={`flex items-center justify-between p-4 rounded-xl hover:bg-gray-100 transition-colors ${
                           recentlyAddedItemId === item.shopping_list_item_id 
                             ? 'ring-2 ring-green-500 shadow-lg' 
@@ -1009,7 +1051,8 @@ export default function ShoppingPage() {
                           </button>
                         </div>
                       </motion.div>
-                    ))
+                    ))}
+                    </AnimatePresence>
                   )}
                 </div>
               </motion.div>

@@ -49,6 +49,9 @@ interface ShoppingItem {
 }
 
 export default function ShoppingActivePage() {
+  // Toggle for prediction UI messages - set to false to hide, true to show
+  const SHOW_PREDICTION_UI = false
+
   const router = useRouter()
   const searchParams = useSearchParams()
   const { user, loading } = useAuthStore()
@@ -401,7 +404,7 @@ export default function ShoppingActivePage() {
                           </div>
 
                           {/* Model Prediction - Simple Display */}
-                          {item.prediction && item.product_id && item.prediction.will_last_days && (
+                          {SHOW_PREDICTION_UI && item.prediction && item.product_id && item.prediction.will_last_days && (
                             <div className="mt-3 p-3 bg-gradient-to-r from-blue-50 to-indigo-50 rounded-lg border border-blue-200">
                               <div className="flex items-center justify-between">
                                 <span className="text-sm font-semibold text-gray-700">
@@ -412,7 +415,7 @@ export default function ShoppingActivePage() {
                           )}
 
                           {/* Days Prediction Feedback (for items with product_id) */}
-                          {item.product_id && item.status !== 'BOUGHT' && item.prediction?.will_last_days && (
+                          {SHOW_PREDICTION_UI && item.product_id && item.status !== 'BOUGHT' && item.prediction?.will_last_days && (
                             <div className="mt-3 p-3 bg-purple-50 rounded-lg border border-purple-200">
                               <div className="flex items-center justify-between gap-3">
                                 <span className="text-sm font-medium text-gray-700">
@@ -481,7 +484,7 @@ export default function ShoppingActivePage() {
                           )}
 
                           {/* Days Left Indicator (for items with product_id and prediction) */}
-                          {item.status === 'BOUGHT' && item.product_id && item.prediction?.predicted_days_left !== undefined && (
+                          {SHOW_PREDICTION_UI && item.status === 'BOUGHT' && item.product_id && item.prediction?.predicted_days_left !== undefined && (
                             <div className="flex items-center gap-3 mt-3 p-3 bg-blue-50 rounded-lg">
                               <Clock className="h-5 w-5 text-blue-600" />
                               <div className="flex-1">

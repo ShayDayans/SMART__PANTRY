@@ -480,14 +480,14 @@ export default function RecipesPage() {
                 <div className="flex items-center gap-4">
                   <button
                     onClick={() => setServings(Math.max(1, servings - 1))}
-                    className="w-10 h-10 rounded-lg border-2 border-gray-300 hover:border-orange-500 flex items-center justify-center"
+                    className="w-10 h-10 rounded-lg border-2 border-gray-300 hover:border-orange-500 flex items-center justify-center text-black font-bold text-xl"
                   >
                     -
                   </button>
-                  <span className="text-2xl font-bold w-12 text-center">{servings}</span>
+                  <span className="text-2xl font-bold w-12 text-center text-black">{servings}</span>
                   <button
                     onClick={() => setServings(Math.min(20, servings + 1))}
-                    className="w-10 h-10 rounded-lg border-2 border-gray-300 hover:border-orange-500 flex items-center justify-center"
+                    className="w-10 h-10 rounded-lg border-2 border-gray-300 hover:border-orange-500 flex items-center justify-center text-black font-bold text-xl"
                   >
                     +
                   </button>
