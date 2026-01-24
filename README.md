@@ -28,6 +28,11 @@
 - Recharts - Data visualization
 - Zustand - State management
 
+## דרישות מוקדמות (Prerequisites)
+
+- **Python 3.9+**: בעת ההתקנה, הקפידו לסמן את האפשרות **"Add Python to PATH"**.
+- **Node.js 18+**: בעת ההתקנה, הקפידו לסמן את האפשרות **"Add to PATH"**.
+
 ## התקנה
 
 ### 1. התקנת תלויות Backend
@@ -61,12 +66,11 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzd
 NEXT_PUBLIC_API_URL=http://localhost:8000/api/v1
 ```
 
-צור קובץ `.env` בתיקיית השורש עבור Backend:
+עדכן את קובץ ה-`.env` בתיקיית השורש עבור Backend:
 
 ```env
 SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_ANON_KEY=your-anon-key
-SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
 ```
 
 ### 4. הרצת השרתים
@@ -85,6 +89,12 @@ npm run dev
 - Frontend: http://localhost:3000
 - Backend API: http://localhost:8000
 - API Docs: http://localhost:8000/docs
+
+## משתמש לבדיקה (Test User)
+
+ניתן להשתמש במשתמש הבא כדי לבדוק את המערכת ללא צורך בהרשמה:
+- **Username/Email:** `rotembor_test_2000@gmail.com`
+- **Password:** `1234`
 
 ## מבנה הפרויקט
 
@@ -152,6 +162,18 @@ Smart-Pantry/
 1. צור route ב-`app/api/[resource].py`
 2. הוסף service ב-`app/services/[resource]_service.py`
 3. הוסף schema ב-`app/schemas/[resource].py`
+
+## פתרון תקלות (Troubleshooting)
+
+### שגיאת הרשאת הרצת סקריפטים ב-PowerShell
+אם אתם נתקלים בשגיאה בעת ניסיון להפעיל את הסביבה הווירטואלית (`venv\Scripts\activate`):
+> "File ... cannot be loaded because running scripts is disabled on this system."
+
+**הפתרון:**
+הריצו את הפקודה הבאה ב-PowerShell (כמשתמש נוכחי):
+```powershell
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+```
 
 ## רישיון
 
