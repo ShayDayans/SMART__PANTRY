@@ -9,14 +9,16 @@ import {
   Package, 
   ShoppingCart, 
   Receipt, 
-  TrendingUp, 
   AlertCircle,
   CheckCircle,
   Clock,
   DollarSign,
   Activity,
   Users,
-  Calendar
+  Calendar,
+  ChefHat,
+  Settings,
+  Info
 } from 'lucide-react'
 import { motion } from 'framer-motion'
 import { api } from '@/lib/api'
@@ -118,13 +120,22 @@ export default function DashboardPage() {
       iconColor: 'text-purple-600',
     },
     {
-      title: 'Analytics',
-      description: 'View insights',
-      icon: TrendingUp,
-      href: '/dashboard/profitability',
+      title: 'Recipes',
+      description: 'Generate recipes',
+      icon: ChefHat,
+      href: '/dashboard/recipes',
       color: 'from-orange-500 to-red-500',
       bgColor: 'bg-orange-50',
       iconColor: 'text-orange-600',
+    },
+    {
+      title: 'Habits',
+      description: 'Manage habits',
+      icon: Settings,
+      href: '/dashboard/habits',
+      color: 'from-indigo-500 to-purple-500',
+      bgColor: 'bg-indigo-50',
+      iconColor: 'text-indigo-600',
     },
   ]
 
@@ -284,7 +295,16 @@ export default function DashboardPage() {
                 <p className="text-sm text-gray-500 mt-2">Items tracked</p>
                 <div className="mt-4">
                   <div className="flex items-center justify-between text-xs">
-                    <span className="text-gray-500">AI Confidence</span>
+                    <span className="text-gray-500 flex items-center gap-1">
+                      AI Confidence
+                      <div className="group relative">
+                        <Info className="h-3 w-3 text-gray-400 cursor-help" />
+                        <div className="absolute left-0 bottom-full mb-2 w-64 p-2 bg-gray-900 text-white text-xs rounded-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10 shadow-xl">
+                          <div className="font-semibold mb-1">AI Confidence Score</div>
+                          <div>Measures prediction reliability based on evidence (completed cycles), stability (pattern consistency), and recency (update freshness). Higher = more reliable.</div>
+                        </div>
+                      </div>
+                    </span>
                     <span className="font-semibold text-gray-900">{stats.predictions.avg_confidence}%</span>
                   </div>
                 </div>

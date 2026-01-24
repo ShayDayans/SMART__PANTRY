@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation'
 import { useAuthStore } from '@/store/useAuthStore'
 import { DashboardLayout } from '@/components/layouts/DashboardLayout'
 import { api } from '@/lib/api'
-import { Package, Trash2, RefreshCw, Plus, TrendingUp, Clock, Search, Filter, X, Edit2, Check, AlertCircle, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react'
+import { Package, Trash2, RefreshCw, Plus, TrendingUp, Clock, Search, Filter, X, Edit2, Check, AlertCircle, ArrowUpDown, ArrowUp, ArrowDown, Info, HelpCircle } from 'lucide-react'
 
 interface InventoryItem {
   product_id: string
@@ -94,6 +94,29 @@ const getStockLabel = (state: string): string => {
   }
 }
 
+const getConfidenceLevel = (confidence: number): { label: string; color: string; description: string } => {
+  const percent = Math.round(confidence * 100)
+  if (percent >= 70) {
+    return {
+      label: 'High',
+      color: 'text-green-600 bg-green-50 border-green-200',
+      description: 'Very reliable - based on multiple cycles and stable patterns'
+    }
+  } else if (percent >= 40) {
+    return {
+      label: 'Medium',
+      color: 'text-yellow-600 bg-yellow-50 border-yellow-200',
+      description: 'Moderately reliable - model is learning your patterns'
+    }
+  } else {
+    return {
+      label: 'Low',
+      color: 'text-red-600 bg-red-50 border-red-200',
+      description: 'Low reliability - new product or inconsistent patterns, feedback needed'
+    }
+  }
+}
+
 // Updated colors: FULL=green, MEDIUM=yellow, LOW=orange, EMPTY=red
 const getColorFromState = (state: string): string => {
   switch (state) {
@@ -133,6 +156,72 @@ const getBadgeColorFromState = (state: string): string => {
     case 'EMPTY': return 'bg-red-500 text-white'
     default: return 'bg-gray-500 text-white'
   }
+}
+
+const ConfidenceInfoBox = () => {
+  const [isOpen, setIsOpen] = useState(false)
+  
+  return (
+    <div className="mb-6 bg-gradient-to-r from-blue-50 to-indigo-50 rounded-xl p-4 border border-blue-200">
+      <button
+        onClick={() => setIsOpen(!isOpen)}
+        className="flex items-center justify-between w-full text-left"
+      >
+        <div className="flex items-center gap-2">
+          <HelpCircle className="h-5 w-5 text-blue-600" />
+          <span className="font-semibold text-blue-900">What is AI Confidence?</span>
+        </div>
+        <span className="text-blue-600 text-xl">{isOpen ? '−' : '+'}</span>
+      </button>
+      
+      {isOpen && (
+        <div className="mt-4 space-y-4 text-sm text-gray-700">
+          <p className="font-medium">
+            AI Confidence measures how reliable the prediction is, based on three factors:
+          </p>
+          
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="bg-white rounded-lg p-3 border border-blue-100">
+              <div className="font-semibold text-blue-900 mb-1">📊 Evidence</div>
+              <p className="text-xs">Number of completed consumption cycles. More cycles = higher confidence.</p>
+            </div>
+            
+            <div className="bg-white rounded-lg p-3 border border-blue-100">
+              <div className="font-semibold text-blue-900 mb-1">📈 Stability</div>
+              <p className="text-xs">Consistency of your consumption patterns. Stable patterns = higher confidence.</p>
+            </div>
+            
+            <div className="bg-white rounded-lg p-3 border border-blue-100">
+              <div className="font-semibold text-blue-900 mb-1">⏰ Recency</div>
+              <p className="text-xs">How recent the last update was. Recent updates = higher confidence.</p>
+            </div>
+          </div>
+          
+          <div className="bg-white rounded-lg p-3 border border-blue-100">
+            <div className="font-semibold text-blue-900 mb-2">Confidence Levels:</div>
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <span className="px-2 py-1 rounded text-xs font-medium bg-green-50 text-green-600 border border-green-200">High (70-100%)</span>
+                <span className="text-xs">Very reliable predictions</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="px-2 py-1 rounded text-xs font-medium bg-yellow-50 text-yellow-600 border border-yellow-200">Medium (40-69%)</span>
+                <span className="text-xs">Moderately reliable, still learning</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="px-2 py-1 rounded text-xs font-medium bg-red-50 text-red-600 border border-red-200">Low (0-39%)</span>
+                <span className="text-xs">Low reliability, feedback needed</span>
+              </div>
+            </div>
+          </div>
+          
+          <div className="text-xs text-gray-600 italic bg-white p-2 rounded border border-blue-100">
+            Formula: <code className="bg-gray-50 px-2 py-1 rounded border">confidence = 0.2 + 0.8 × (evidence × stability × recency)</code>
+          </div>
+        </div>
+      )}
+    </div>
+  )
 }
 
 export default function PantryPage() {
@@ -600,6 +689,9 @@ export default function PantryPage() {
           </div>
         </div>
 
+        {/* AI Confidence Info Box */}
+        <ConfidenceInfoBox />
+
         {/* Filters */}
         <div className="bg-white shadow-lg rounded-2xl p-6 mb-6 border border-gray-200">
           <div className="flex items-center gap-4 mb-4">
@@ -892,8 +984,18 @@ export default function PantryPage() {
                           )}
                         </span>
                       </div>
-                      <div className="mt-1 text-xs text-blue-700">
-                        AI Confidence: {Math.round((item.prediction?.confidence || 0) * 100)}%
+                      <div className="mt-1 text-xs text-blue-700 flex items-center gap-2">
+                        <span>AI Confidence: </span>
+                        <span className="font-semibold">{Math.round((item.prediction?.confidence || 0) * 100)}%</span>
+                        <div className="group relative">
+                          <Info className="h-3 w-3 text-blue-500 cursor-help" />
+                          <div className="absolute left-0 bottom-full mb-2 w-64 p-2 bg-gray-900 text-white text-xs rounded-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10 shadow-xl">
+                            <div className="font-semibold mb-1">
+                              {getConfidenceLevel(item.prediction?.confidence || 0).label} Confidence
+                            </div>
+                            <div>{getConfidenceLevel(item.prediction?.confidence || 0).description}</div>
+                          </div>
+                        </div>
                       </div>
                     </div>
                   )}

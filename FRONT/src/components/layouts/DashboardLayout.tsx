@@ -9,7 +9,6 @@ import {
   ShoppingCart, 
   Package, 
   Receipt, 
-  TrendingUp, 
   Settings,
   LogOut,
   ArrowRight,
@@ -27,7 +26,6 @@ const navItems = [
   { href: '/dashboard/return-shopping', label: 'Return Shopping', icon: Receipt },
   { href: '/dashboard/recipes', label: 'Recipes', icon: ChefHat },
   { href: '/dashboard/habits', label: 'Habits', icon: Settings },
-  { href: '/dashboard/profitability', label: 'Analytics', icon: TrendingUp },
 ]
 
 export function DashboardLayout({ children }: { children: React.ReactNode }) {
