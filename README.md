@@ -1,20 +1,20 @@
-# Smart Pantry - מזווה חכם
+# Smart Pantry
 
-מערכת ניהול מזווה חכמה ואינטרקטיבית עם AI
+A smart and interactive pantry management system powered by AI.
 
-## תכונות
+## Features
 
-- 🔐 **התחברות והרשמה** - מערכת אימות מלאה עם Supabase Auth
-- 👤 **פרופיל משתמש** - הגדרות אישיות, הרגלי אכילה, תדירות קניות
-- 🏠 **עמוד ראשי** - דשבורד מרכזי עם גישה מהירה לכל התכונות
-- 🛒 **יציאה לקניות** - יצירת רשימות קניות חכמות עם המלצות
-- 🛍️ **אני בקניות** - מעקב בזמן אמת במהלך הקנייה
-- 📄 **חזרה מקניות** - סריקת קבלות ועדכון אוטומטי של המזווה
-- 📦 **מזווה** - ניהול מלאי עם מדדים ויזואליים
-- 📊 **הרגלים** - מעקב אחר העדפות ואירועים מיוחדים
-- 💰 **רווחיות** - ניתוחים וגרפים של הוצאות
+- 🔐 **Authentication** - Full login and registration system with Supabase.
+- 👤 **User Profile** - Personal settings, eating habits, and shopping frequency.
+- 🏠 **Main Dashboard** - Central hub with quick access to all features.
+- 🛒 **Smart Shopping** - Intelligent shopping list generation with recommendations.
+- 🛍️ **Live Shopping** - Real-time tracking while you shop.
+- 📄 **Receipt Scanning** - Automated pantry updates via AI receipt analysis.
+- 📦 **Pantry Management** - Inventory tracking with visual indicators.
+- 📊 **Habits** - Tracking preferences and special events.
+- 💰 **Analytics** - Expense analysis and consumption trends.
 
-## טכנולוגיות
+## Technologies
 
 ### Backend
 - FastAPI - API server
@@ -28,34 +28,34 @@
 - Recharts - Data visualization
 - Zustand - State management
 
-## דרישות מוקדמות (Prerequisites)
+## Prerequisites
 
-- **Python 3.9+**: בעת ההתקנה, הקפידו לסמן את האפשרות **"Add Python to PATH"**.
-- **Node.js 18+**: בעת ההתקנה, הקפידו לסמן את האפשרות **"Add to PATH"**.
+- **Python 3.9+**: During installation, ensure you check the **"Add Python to PATH"** option.
+- **Node.js 18+**: During installation, ensure you check the **"Add to PATH"** option.
 
-## התקנה
+## Installation
 
-### 1. התקנת תלויות Backend
+### 1. Install Backend Dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 2. התקנת תלויות Frontend
+### 2. Install Frontend Dependencies
 
 ```bash
 npm install
 ```
 
-### 3. הגדרת משתני סביבה
+### 3. Environment Configuration
 
-**⚠️ חשוב: כל משתמש צריך ליצור את הקובץ `.env.local` בתיקיית `FRONT/`!**
+**⚠️ Important: Every user must create a `.env.local` file in the `FRONT/` directory!**
 
-📖 **הוראות מפורטות:** ראה `FRONT/ENV_SETUP.md`
+📖 **Detailed Instructions:** See `FRONT/ENV_SETUP.md`
 
-**בקצרה:**
-1. צור קובץ `.env.local` בתיקיית `FRONT/` (לא בתיקיית השורש!)
-2. העתק את התוכן הבא:
+**Summary:**
+1. Create a `.env.local` file in the `FRONT/` folder (not in the root!).
+2. Copy the following content:
 
 ```env
 # Supabase
@@ -66,14 +66,14 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzd
 NEXT_PUBLIC_API_URL=http://localhost:8000/api/v1
 ```
 
-עדכן את קובץ ה-`.env` בתיקיית השורש עבור Backend:
+Update the `.env` file in the root directory for the Backend:
 
 ```env
 SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_ANON_KEY=your-anon-key
 ```
 
-### 4. הרצת השרתים
+### 4. Running the Application
 
 **Backend:**
 ```bash
@@ -85,18 +85,18 @@ uvicorn app.main:app --reload
 npm run dev
 ```
 
-האפליקציה תהיה זמינה ב:
+The application will be available at:
 - Frontend: http://localhost:3000
 - Backend API: http://localhost:8000
 - API Docs: http://localhost:8000/docs
 
-## משתמש לבדיקה (Test User)
+## Test User
 
-ניתן להשתמש במשתמש הבא כדי לבדוק את המערכת ללא צורך בהרשמה:
+You can use the following credentials to test the system without registering:
 - **Username/Email:** `rotembor_test_2000@gmail.com`
 - **Password:** `1234`
 
-## מבנה הפרויקט
+## Project Structure
 
 ```
 Smart-Pantry/
@@ -117,64 +117,64 @@ Smart-Pantry/
 ## API Endpoints
 
 ### Products
-- `GET /api/v1/products` - קבלת כל המוצרים
-- `POST /api/v1/products` - יצירת מוצר חדש
-- `PUT /api/v1/products/{id}` - עדכון מוצר
-- `DELETE /api/v1/products/{id}` - מחיקת מוצר
+- `GET /api/v1/products` - Get all products
+- `POST /api/v1/products` - Create a new product
+- `PUT /api/v1/products/{id}` - Update a product
+- `DELETE /api/v1/products/{id}` - Delete a product
 
 ### Inventory
-- `GET /api/v1/inventory?user_id={uuid}` - קבלת מלאי המשתמש
-- `POST /api/v1/inventory?user_id={uuid}` - עדכון/יצירת פריט במלאי
-- `PUT /api/v1/inventory/{product_id}?user_id={uuid}` - עדכון פריט
+- `GET /api/v1/inventory?user_id={uuid}` - Get user inventory
+- `POST /api/v1/inventory?user_id={uuid}` - Create/Update inventory item
+- `PUT /api/v1/inventory/{product_id}?user_id={uuid}` - Update inventory item
 
 ### Shopping Lists
-- `GET /api/v1/shopping-lists?user_id={uuid}` - קבלת רשימות קניות
-- `POST /api/v1/shopping-lists?user_id={uuid}` - יצירת רשימה חדשה
-- `POST /api/v1/shopping-lists/{id}/items` - הוספת פריט לרשימה
+- `GET /api/v1/shopping-lists?user_id={uuid}` - Get shopping lists
+- `POST /api/v1/shopping-lists?user_id={uuid}` - Create a new list
+- `POST /api/v1/shopping-lists/{id}/items` - Add item to list
 
 ### Receipts
-- `GET /api/v1/receipts?user_id={uuid}` - קבלת קבלות
-- `POST /api/v1/receipts?user_id={uuid}` - יצירת קבלה חדשה
+- `GET /api/v1/receipts?user_id={uuid}` - Get receipts
+- `POST /api/v1/receipts?user_id={uuid}` - Create a new receipt
 
-## תכונות AI (מתוכננות)
+## AI Features (Planned)
 
-המערכת תלמד את ההרגלים שלך:
-- קצב צריכה של מוצרים
-- ימים בשבוע של צריכה מוגברת
-- סגנון קניות אישי
-- החלטות חוזרות
+The system learns your habits:
+- Product consumption rates
+- High-consumption days of the week
+- Personal shopping style
+- Recurring decisions
 
-תקשורת טבעית:
-- "שמתי לב שהקפה נגמר מהר ב-30% מהרגיל..."
-- "הסרתי שוב חטיפים כי הסרת אותם 4 שבועות ברצף..."
-- "יש סתירה קטנה: קנית 2 יח' אבל זה נגמר מהר מהצפוי..."
+Natural communication examples:
+- "I noticed the coffee is running out 30% faster than usual..."
+- "I removed snacks again because you've removed them for 4 weeks in a row..."
+- "There's a slight discrepancy: you bought 2 units but they finished faster than expected..."
 
-## פיתוח
+## Development
 
-### הוספת עמוד חדש
+### Adding a New Page
 
-1. צור קובץ ב-`src/app/[route]/page.tsx`
-2. השתמש ב-`DashboardLayout` לעמודי dashboard
-3. השתמש ב-`useAuthStore` לניהול אימות
+1. Create a file in `src/app/[route]/page.tsx`.
+2. Use `DashboardLayout` for dashboard pages.
+3. Use `useAuthStore` for authentication management.
 
-### הוספת API endpoint
+### Adding an API Endpoint
 
-1. צור route ב-`app/api/[resource].py`
-2. הוסף service ב-`app/services/[resource]_service.py`
-3. הוסף schema ב-`app/schemas/[resource].py`
+1. Create a route in `app/api/[resource].py`.
+2. Add a service in `app/services/[resource]_service.py`.
+3. Add a schema in `app/schemas/[resource].py`.
 
-## פתרון תקלות (Troubleshooting)
+## Troubleshooting
 
-### שגיאת הרשאת הרצת סקריפטים ב-PowerShell
-אם אתם נתקלים בשגיאה בעת ניסיון להפעיל את הסביבה הווירטואלית (`venv\Scripts\activate`):
+### PowerShell Script Execution Error
+If you encounter an error when trying to activate the virtual environment (`venv\Scripts\activate`):
 > "File ... cannot be loaded because running scripts is disabled on this system."
 
-**הפתרון:**
-הריצו את הפקודה הבאה ב-PowerShell (כמשתמש נוכחי):
+**The Solution:**
+Run the following command in PowerShell (as the current user):
 ```powershell
 Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 ```
 
-## רישיון
+## License
 
 MIT
