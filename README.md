@@ -299,6 +299,9 @@ Before using the application, verify that everything is set up correctly:
 1. **Register/Login**:
    - Go to http://localhost:3000/login
    - Create a new account or sign in with existing credentials
+   You can use the following credentials to test the system without registering:
+ **Username/Email:** `rotembor_test_2000@gmail.com`
+ **Password:** 1234
 
 2. **Dashboard**:
    - After login, you'll see the main dashboard
