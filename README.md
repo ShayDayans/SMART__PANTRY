@@ -302,6 +302,7 @@ Before using the application, verify that everything is set up correctly:
    You can use the following credentials to test the system without registering:
  **Username/Email:** `rotembor_test_2000@gmail.com`
  **Password:** 1234
+   - If it takes a while to load, refresh the page or use hard refresh (Ctrl + Shift + R)
 
 2. **Dashboard**:
    - After login, you'll see the main dashboard
